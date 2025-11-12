@@ -1,0 +1,99 @@
+/*
+ * * Copyright (C) 2008-2011 Ali <aliov@xfce.org>
+ *
+ * Licensed under the GNU General Public License Version 2
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+ */
+
+#ifndef __XFPM_ENUM_GLIB_H
+#define __XFPM_ENUM_GLIB_H
+
+#include <glib.h>
+
+G_BEGIN_DECLS
+
+/*
+ * Order matters
+ */
+typedef enum
+{
+  XFPM_BATTERY_CHARGE_UNKNOWN,
+  XFPM_BATTERY_CHARGE_CRITICAL,
+  XFPM_BATTERY_CHARGE_LOW,
+  XFPM_BATTERY_CHARGE_OK,
+  N_XFPM_BATTERY_CHARGES
+} XfpmBatteryCharge;
+
+typedef enum
+{
+  XFPM_DO_NOTHING,
+  XFPM_DO_SUSPEND,
+  XFPM_DO_HIBERNATE,
+  XFPM_ASK,
+  XFPM_DO_SHUTDOWN,
+  XFPM_DO_HYBRID_SLEEP,
+  N_XFPM_SHUTDOWN_REQUESTS
+} XfpmShutdownRequest;
+
+typedef enum
+{
+  LID_TRIGGER_DPMS,
+  LID_TRIGGER_SUSPEND,
+  LID_TRIGGER_HIBERNATE,
+  LID_TRIGGER_LOCK_SCREEN,
+  LID_TRIGGER_NOTHING,
+  LID_TRIGGER_HYBRID_SLEEP,
+  LID_TRIGGER_SHUTDOWN,
+  N_LID_TRIGGERS
+} XfpmLidTriggerAction;
+
+typedef enum
+{
+  BUTTON_UNKNOWN = 0,
+  BUTTON_POWER_OFF,
+  BUTTON_HIBERNATE,
+  BUTTON_SLEEP,
+  BUTTON_MON_BRIGHTNESS_UP,
+  BUTTON_MON_BRIGHTNESS_DOWN,
+  BUTTON_LID_CLOSED,
+  BUTTON_BATTERY,
+  BUTTON_KBD_BRIGHTNESS_UP,
+  BUTTON_KBD_BRIGHTNESS_DOWN,
+  BUTTON_KBD_BRIGHTNESS_CYCLE,
+  N_XFPM_BUTTON_KEYS
+} XfpmButtonKey;
+
+typedef enum
+{
+  SPIN_DOWN_HDD_NEVER,
+  SPIN_DOWN_HDD_ON_BATTERY,
+  SPIN_DOWN_HDD_PLUGGED_IN,
+  SPIN_DOWN_HDD_ALWAYS,
+  N_SPIN_DOWN_HDDS
+} XfpmSpindownRequest;
+
+typedef enum
+{
+  PANEL_LABEL_NONE,
+  PANEL_LABEL_PERCENTAGE,
+  PANEL_LABEL_TIME,
+  PANEL_LABEL_PERCENTAGE_AND_TIME,
+  N_PANEL_LABELS
+} XfpmPanelLabel;
+
+G_END_DECLS
+
+#endif /* __XFPM_ENUM_GLIB_H */
