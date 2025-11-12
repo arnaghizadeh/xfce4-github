@@ -1,3 +1,0 @@
-<!ENTITY package_name @PACKAGE_NAME@>
-<!ENTITY package_version @PACKAGE_VERSION@>
-<!ENTITY package_string @PACKAGE_STRING@>

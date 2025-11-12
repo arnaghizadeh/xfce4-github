@@ -1,3 +1,0 @@
- * Implement the GtkBuildable interface into XfceTitleDialog
-   and add the needed code for GtkBuilder and Glade 3.5 to
-   recognize it.
