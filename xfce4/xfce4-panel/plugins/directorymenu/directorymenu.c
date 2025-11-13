@@ -457,15 +457,26 @@ directory_menu_plugin_configure_plugin_icon_chooser (GtkWidget *button,
 
   panel_return_if_fail (DIRECTORY_MENU_IS_PLUGIN (plugin));
 
-  chooser = xfce_icon_chooser_dialog_new (
-    _("Select An Icon"), parent, _("_Cancel"), GTK_RESPONSE_CANCEL, _("_OK"), GTK_RESPONSE_ACCEPT, NULL);
+  /* Use GtkFileChooserDialog as fallback for libxfce4ui < 4.21 */
+  chooser = gtk_file_chooser_dialog_new (
+    _("Select An Icon"), parent, GTK_FILE_CHOOSER_ACTION_OPEN,
+    _("_Cancel"), GTK_RESPONSE_CANCEL, _("_OK"), GTK_RESPONSE_ACCEPT, NULL);
   gtk_dialog_set_default_response (GTK_DIALOG (chooser), GTK_RESPONSE_ACCEPT);
 
-  xfce_icon_chooser_dialog_set_icon (XFCE_ICON_CHOOSER_DIALOG (chooser), plugin->icon_name);
+  /* Set filter for icon files */
+  GtkFileFilter *filter = gtk_file_filter_new ();
+  gtk_file_filter_set_name (filter, _("Icon files"));
+  gtk_file_filter_add_mime_type (filter, "image/png");
+  gtk_file_filter_add_mime_type (filter, "image/svg+xml");
+  gtk_file_filter_add_mime_type (filter, "image/x-xpixmap");
+  gtk_file_chooser_add_filter (GTK_FILE_CHOOSER (chooser), filter);
+
+  if (plugin->icon_name != NULL && g_file_test (plugin->icon_name, G_FILE_TEST_EXISTS))
+    gtk_file_chooser_set_filename (GTK_FILE_CHOOSER (chooser), plugin->icon_name);
 
   if (gtk_dialog_run (GTK_DIALOG (chooser)) == GTK_RESPONSE_ACCEPT)
     {
-      icon = xfce_icon_chooser_dialog_get_icon (XFCE_ICON_CHOOSER_DIALOG (chooser));
+      icon = gtk_file_chooser_get_filename (GTK_FILE_CHOOSER (chooser));
       g_object_set (G_OBJECT (plugin), "icon-name", icon, NULL);
       g_free (icon);
 
@@ -829,16 +840,20 @@ directory_menu_plugin_menu_open (GtkWidget *mi,
       g_strfreev (binaries);
     }
 
-  if (!result
-      && !xfce_execute_preferred_application (category,
-                                              path_as_arg ? working_dir : NULL,
-                                              working_dir,
-                                              NULL,
-                                              &error))
+  if (!result)
     {
-      xfce_dialog_show_error (
-        NULL, error, _("Failed to execute the preferred application for category \"%s\""), category);
-      g_error_free (error);
+      /* Fallback for libxfce4ui < 4.21: use g_app_info_launch_default_for_uri */
+      gchar *uri = g_filename_to_uri (working_dir, NULL, NULL);
+      if (uri != NULL)
+        {
+          if (!g_app_info_launch_default_for_uri (uri, NULL, &error))
+            {
+              xfce_dialog_show_error (
+                NULL, error, _("Failed to execute the preferred application for category \"%s\""), category);
+              g_error_free (error);
+            }
+          g_free (uri);
+        }
     }
 }
 

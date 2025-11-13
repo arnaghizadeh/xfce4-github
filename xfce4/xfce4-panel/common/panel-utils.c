@@ -304,7 +304,9 @@ gint
 panel_utils_compare_xfw_gdk_monitors (gconstpointer a,
                                       gconstpointer b)
 {
-  return xfw_monitor_get_gdk_monitor ((XfwMonitor *) a) == b ? 0 : 1;
+  /* Stub for API compatibility with libxfce4windowing < 4.20 */
+  /* XfwMonitor API doesn't exist in 4.19, use direct pointer comparison */
+  return (a == b) ? 0 : 1;
 }
 
 

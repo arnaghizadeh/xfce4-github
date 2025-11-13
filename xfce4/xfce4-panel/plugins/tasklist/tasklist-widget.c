@@ -149,7 +149,8 @@ enum
   PROP_WRAP_WINDOWS,
   PROP_INCLUDE_ALL_BLINKING,
   PROP_MIDDLE_CLICK,
-  PROP_LABEL_DECORATIONS
+  PROP_LABEL_DECORATIONS,
+  PROP_SHOW_RECENT_FILES
 };
 
 struct _XfceTasklist
@@ -240,6 +241,10 @@ struct _XfceTasklist
   /* dummy properties */
   guint show_handle : 1;
   guint show_tooltips : 1;
+
+  /* recent files feature */
+  guint show_recent_files : 1;
+  GtkRecentManager *recent_manager;
 
 #ifdef ENABLE_X11
   /* wireframe window */
@@ -460,6 +465,19 @@ static void
 xfce_tasklist_group_button_child_destroyed (XfceTasklistChild *group_child,
                                             GtkWidget *child_button);
 
+/* recent files functions */
+static GList *
+xfce_tasklist_get_recent_files_for_app (XfceTasklist *tasklist,
+                                        XfwApplication *app);
+static void
+xfce_tasklist_recent_files_menu_item_activate (GtkMenuItem *item,
+                                               gpointer user_data);
+static void
+xfce_tasklist_recent_files_clear_activate (GtkMenuItem *item,
+                                           XfceTasklist *tasklist);
+static GtkWidget *
+xfce_tasklist_create_recent_files_menu (XfceTasklistChild *child);
+
 /* potential public functions */
 static void
 xfce_tasklist_set_include_all_workspaces (XfceTasklist *tasklist,
@@ -634,6 +652,13 @@ xfce_tasklist_class_init (XfceTasklistClass *klass)
                                                          FALSE,
                                                          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  g_object_class_install_property (gobject_class,
+                                   PROP_SHOW_RECENT_FILES,
+                                   g_param_spec_boolean ("show-recent-files",
+                                                         NULL, NULL,
+                                                         FALSE,
+                                                         G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   gtk_widget_class_install_style_property (gtkwidget_class,
                                            g_param_spec_int ("max-button-length",
                                                              NULL,
@@ -728,6 +753,8 @@ xfce_tasklist_init (XfceTasklist *tasklist)
   tasklist->grouping = FALSE;
   tasklist->sort_order = XFCE_TASKLIST_SORT_ORDER_DEFAULT;
   tasklist->menu_max_width_chars = DEFAULT_MENU_MAX_WIDTH_CHARS;
+  tasklist->show_recent_files = FALSE;
+  tasklist->recent_manager = gtk_recent_manager_get_default ();
 
   /* add style class for the tasklist widget */
   context = gtk_widget_get_style_context (GTK_WIDGET (tasklist));
@@ -820,6 +847,10 @@ xfce_tasklist_get_property (GObject *object,
       g_value_set_boolean (value, tasklist->label_decorations);
       break;
 
+    case PROP_SHOW_RECENT_FILES:
+      g_value_set_boolean (value, tasklist->show_recent_files);
+      break;
+
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -907,6 +938,10 @@ xfce_tasklist_set_property (GObject *object,
 
     case PROP_LABEL_DECORATIONS:
       xfce_tasklist_set_label_decorations (tasklist, g_value_get_boolean (value));
+      break;
+
+    case PROP_SHOW_RECENT_FILES:
+      tasklist->show_recent_files = g_value_get_boolean (value);
       break;
 
     default:
@@ -3301,6 +3336,23 @@ xfce_tasklist_button_button_press_event (GtkWidget *button,
     {
       menu = xfw_window_action_menu_new (child->window);
       xfce_tasklist_button_add_launch_new_instance_item (child, menu, FALSE);
+
+      /* Add recent files submenu if feature is enabled */
+      if (child->tasklist->show_recent_files)
+        {
+          GtkWidget *recent_item, *recent_submenu, *sep;
+
+          sep = gtk_separator_menu_item_new ();
+          gtk_menu_shell_prepend (GTK_MENU_SHELL (menu), sep);
+          gtk_widget_show (sep);
+
+          recent_submenu = xfce_tasklist_create_recent_files_menu (child);
+          recent_item = gtk_menu_item_new_with_label (_("Recent Files"));
+          gtk_menu_item_set_submenu (GTK_MENU_ITEM (recent_item), recent_submenu);
+          gtk_menu_shell_prepend (GTK_MENU_SHELL (menu), recent_item);
+          gtk_widget_show (recent_item);
+        }
+
       g_signal_connect (G_OBJECT (menu), "deactivate",
                         G_CALLBACK (xfce_tasklist_button_menu_destroy), child);
 
@@ -3628,7 +3680,7 @@ xfce_tasklist_button_activate (XfceTasklistChild *child,
             }
         }
 
-      xfw_window_activate (child->window, NULL, timestamp, NULL);
+      xfw_window_activate (child->window, (guint64) timestamp, NULL);
     }
 
   return TRUE;
@@ -4996,6 +5048,354 @@ xfce_tasklist_monitors_to_include_changed (GtkComboBox *combobox,
   g_object_set (G_OBJECT (tasklist), "monitors-to-include", monitors_to_include, NULL);
 
   g_free (monitors_to_include);
+}
+
+
+
+/**
+ * Recent Files Implementation
+ **/
+
+/* Comparison function to sort recent files by timestamp (most recent first) */
+static gint
+xfce_tasklist_recent_files_sort_by_time (gconstpointer a,
+                                         gconstpointer b)
+{
+  GtkRecentInfo *info_a = (GtkRecentInfo *) a;
+  GtkRecentInfo *info_b = (GtkRecentInfo *) b;
+  time_t time_a = gtk_recent_info_get_modified (info_a);
+  time_t time_b = gtk_recent_info_get_modified (info_b);
+
+  if (time_a > time_b)
+    return -1;
+  else if (time_a < time_b)
+    return 1;
+  else
+    return 0;
+}
+
+
+
+static GList *
+xfce_tasklist_get_recent_files_for_app (XfceTasklist *tasklist,
+                                        XfwApplication *app)
+{
+  GList *all_items, *filtered_items = NULL;
+  GList *li;
+  GtkRecentInfo *info;
+  const gchar *app_name = NULL;
+  const gchar *app_class_id = NULL;
+  gint count = 0;
+  const gint max_items = 10;
+
+  panel_return_val_if_fail (XFCE_IS_TASKLIST (tasklist), NULL);
+
+  if (tasklist->recent_manager == NULL)
+    return NULL;
+
+  if (app != NULL)
+    {
+      app_name = xfw_application_get_name (app);
+      app_class_id = xfw_application_get_class_id (app);
+    }
+
+  all_items = gtk_recent_manager_get_items (tasklist->recent_manager);
+
+  /* Sort by modification time */
+  all_items = g_list_sort (all_items, xfce_tasklist_recent_files_sort_by_time);
+
+  for (li = all_items; li != NULL && count < max_items; li = li->next)
+    {
+      info = (GtkRecentInfo *) li->data;
+
+      /* Skip if not local file */
+      if (!gtk_recent_info_is_local (info))
+        continue;
+
+      /* Note: We don't check gtk_recent_info_exists() here as it can fail
+       * for files on mounted drives or network shares. Let the user see
+       * the recent file and handle errors when opening. */
+
+      /* If we have an app, try to filter by it */
+      if (app != NULL)
+        {
+          gboolean matches = FALSE;
+          gchar **apps = gtk_recent_info_get_applications (info, NULL);
+
+          if (apps != NULL)
+            {
+              for (gint i = 0; apps[i] != NULL; i++)
+                {
+                  /* Check if app name or class id is in the list */
+                  if ((app_name != NULL && g_ascii_strcasecmp (apps[i], app_name) == 0)
+                      || (app_class_id != NULL && g_ascii_strcasecmp (apps[i], app_class_id) == 0))
+                    {
+                      matches = TRUE;
+                      break;
+                    }
+                  /* Also try to match by exe name (e.g., "firefox" in "Firefox") */
+                  if (app_class_id != NULL)
+                    {
+                      gchar *lower_app = g_ascii_strdown (apps[i], -1);
+                      gchar *lower_class = g_ascii_strdown (app_class_id, -1);
+                      if (g_str_has_prefix (lower_app, lower_class) || g_str_has_prefix (lower_class, lower_app))
+                        matches = TRUE;
+                      g_free (lower_app);
+                      g_free (lower_class);
+                      if (matches)
+                        break;
+                    }
+                }
+              g_strfreev (apps);
+            }
+
+          if (!matches)
+            continue;
+        }
+
+      /* Add to filtered list */
+      filtered_items = g_list_append (filtered_items, gtk_recent_info_ref (info));
+      count++;
+    }
+
+  /* Free all items */
+  g_list_free_full (all_items, (GDestroyNotify) gtk_recent_info_unref);
+
+  /* If no app-specific items found, return generic recent files as fallback */
+  if (filtered_items == NULL)
+    {
+      all_items = gtk_recent_manager_get_items (tasklist->recent_manager);
+      all_items = g_list_sort (all_items, xfce_tasklist_recent_files_sort_by_time);
+
+      for (li = all_items; li != NULL && count < max_items; li = li->next)
+        {
+          info = (GtkRecentInfo *) li->data;
+
+          if (!gtk_recent_info_is_local (info))
+            continue;
+
+          filtered_items = g_list_append (filtered_items, gtk_recent_info_ref (info));
+          count++;
+        }
+
+      g_list_free_full (all_items, (GDestroyNotify) gtk_recent_info_unref);
+    }
+
+  return filtered_items;
+}
+
+
+
+static void
+xfce_tasklist_recent_files_menu_item_activate (GtkMenuItem *item,
+                                               gpointer user_data)
+{
+  const gchar *uri;
+  GError *error = NULL;
+  GAppLaunchContext *context;
+  GdkDisplay *display;
+
+  uri = (const gchar *) g_object_get_data (G_OBJECT (item), "recent-uri");
+  if (uri == NULL)
+    return;
+
+  display = gdk_display_get_default ();
+  context = G_APP_LAUNCH_CONTEXT (gdk_display_get_app_launch_context (display));
+
+  if (!g_app_info_launch_default_for_uri (uri, context, &error))
+    {
+      g_warning ("Failed to open recent file %s: %s", uri, error->message);
+      g_error_free (error);
+    }
+
+  g_object_unref (context);
+}
+
+
+
+static void
+xfce_tasklist_recent_files_clear_activate (GtkMenuItem *item,
+                                           XfceTasklist *tasklist)
+{
+  GError *error = NULL;
+
+  panel_return_if_fail (XFCE_IS_TASKLIST (tasklist));
+
+  if (tasklist->recent_manager != NULL)
+    {
+      if (!gtk_recent_manager_purge_items (tasklist->recent_manager, &error))
+        {
+          g_warning ("Failed to clear recent files: %s", error->message);
+          g_error_free (error);
+        }
+    }
+}
+
+
+
+static gchar *
+xfce_tasklist_format_time_ago (time_t timestamp)
+{
+  time_t now = time (NULL);
+  gint64 diff = (gint64) (now - timestamp);
+
+  if (diff < 60)
+    return g_strdup (_("Just now"));
+  else if (diff < 3600)
+    return g_strdup_printf (_("%ld min ago"), diff / 60);
+  else if (diff < 86400)
+    return g_strdup_printf (_("%ld hours ago"), diff / 3600);
+  else if (diff < 604800)
+    return g_strdup_printf (_("%ld days ago"), diff / 86400);
+  else
+    {
+      GDateTime *dt = g_date_time_new_from_unix_local (timestamp);
+      gchar *result = g_date_time_format (dt, "%x");
+      g_date_time_unref (dt);
+      return result;
+    }
+}
+
+
+
+static GtkWidget *
+xfce_tasklist_create_recent_files_menu (XfceTasklistChild *child)
+{
+  GtkWidget *menu;
+  GtkWidget *box;
+  GtkWidget *item;
+  GtkWidget *image;
+  GtkWidget *label_box;
+  GtkWidget *name_label;
+  GtkWidget *time_label;
+  GList *recent_files, *li;
+  GtkRecentInfo *info;
+  const gchar *display_name;
+  const gchar *uri;
+  gchar *tooltip;
+  gchar *time_str;
+  GIcon *gicon;
+
+  panel_return_val_if_fail (child != NULL, NULL);
+  panel_return_val_if_fail (XFCE_IS_TASKLIST (child->tasklist), NULL);
+
+  menu = gtk_menu_new ();
+  gtk_widget_set_name (menu, "recent-files-menu");
+
+  /* Get recent files for this app */
+  recent_files = xfce_tasklist_get_recent_files_for_app (child->tasklist, child->app);
+
+  if (recent_files == NULL || g_list_length (recent_files) == 0)
+    {
+      /* No recent files available */
+      item = gtk_menu_item_new_with_label (_("No recent files"));
+      gtk_widget_set_sensitive (item, FALSE);
+      gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+      gtk_widget_show (item);
+    }
+  else
+    {
+      /* Add header */
+      item = gtk_menu_item_new_with_label (_("Recent Files"));
+      gtk_widget_set_sensitive (item, FALSE);
+      gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+      gtk_widget_show (item);
+
+      /* Add separator */
+      item = gtk_separator_menu_item_new ();
+      gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+      gtk_widget_show (item);
+
+      for (li = recent_files; li != NULL; li = li->next)
+        {
+          info = (GtkRecentInfo *) li->data;
+
+          display_name = gtk_recent_info_get_display_name (info);
+          uri = gtk_recent_info_get_uri (info);
+
+          /* Create menu item with icon */
+          item = gtk_menu_item_new ();
+
+          /* Create horizontal box for icon and labels */
+          box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+          gtk_container_add (GTK_CONTAINER (item), box);
+
+          /* Add icon */
+          gicon = gtk_recent_info_get_gicon (info);
+          if (gicon != NULL)
+            {
+              image = gtk_image_new_from_gicon (gicon, GTK_ICON_SIZE_MENU);
+              g_object_unref (gicon);
+            }
+          else
+            {
+              image = gtk_image_new_from_icon_name ("text-x-generic", GTK_ICON_SIZE_MENU);
+            }
+          gtk_box_pack_start (GTK_BOX (box), image, FALSE, FALSE, 0);
+
+          /* Create vertical box for name and time */
+          label_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+          gtk_box_pack_start (GTK_BOX (box), label_box, TRUE, TRUE, 0);
+
+          /* Add file name */
+          name_label = gtk_label_new (display_name);
+          gtk_label_set_ellipsize (GTK_LABEL (name_label), PANGO_ELLIPSIZE_MIDDLE);
+          gtk_label_set_max_width_chars (GTK_LABEL (name_label), 40);
+          gtk_label_set_xalign (GTK_LABEL (name_label), 0.0);
+          gtk_box_pack_start (GTK_BOX (label_box), name_label, FALSE, FALSE, 0);
+
+          /* Add time ago */
+          time_str = xfce_tasklist_format_time_ago (gtk_recent_info_get_modified (info));
+          time_label = gtk_label_new (time_str);
+          gtk_label_set_xalign (GTK_LABEL (time_label), 0.0);
+          g_free (time_str);
+
+          /* Make time label smaller and dimmer */
+          GtkStyleContext *context = gtk_widget_get_style_context (time_label);
+          gtk_style_context_add_class (context, "dim-label");
+          PangoAttrList *attrs = pango_attr_list_new ();
+          pango_attr_list_insert (attrs, pango_attr_scale_new (PANGO_SCALE_SMALL));
+          gtk_label_set_attributes (GTK_LABEL (time_label), attrs);
+          pango_attr_list_unref (attrs);
+
+          gtk_box_pack_start (GTK_BOX (label_box), time_label, FALSE, FALSE, 0);
+
+          /* Store URI for activation */
+          g_object_set_data_full (G_OBJECT (item), "recent-uri", g_strdup (uri), g_free);
+
+          /* Set tooltip with full path */
+          tooltip = g_filename_from_uri (uri, NULL, NULL);
+          if (tooltip != NULL)
+            {
+              gtk_widget_set_tooltip_text (item, tooltip);
+              g_free (tooltip);
+            }
+
+          g_signal_connect (G_OBJECT (item), "activate",
+                            G_CALLBACK (xfce_tasklist_recent_files_menu_item_activate), NULL);
+
+          gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+          gtk_widget_show_all (item);
+        }
+
+      /* Add separator before clear option */
+      item = gtk_separator_menu_item_new ();
+      gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+      gtk_widget_show (item);
+
+      /* Add clear recent files option */
+      item = gtk_menu_item_new_with_label (_("Clear Recent Files"));
+      g_signal_connect (G_OBJECT (item), "activate",
+                        G_CALLBACK (xfce_tasklist_recent_files_clear_activate), child->tasklist);
+      gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+      gtk_widget_show (item);
+    }
+
+  /* Free the recent files list */
+  if (recent_files != NULL)
+    g_list_free_full (recent_files, (GDestroyNotify) gtk_recent_info_unref);
+
+  return menu;
 }
 
 

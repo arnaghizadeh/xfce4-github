@@ -1026,12 +1026,12 @@ window_menu_plugin_menu_window_item_activate (GtkWidget *mi,
       workspace = xfw_window_get_workspace (window);
       if (workspace != NULL)
         xfw_workspace_activate (workspace, NULL);
-      xfw_window_activate (window, NULL, event->time, NULL);
+      xfw_window_activate (window, (guint64) event->time, NULL);
     }
   else if (event->button == 2)
     {
       /* active the window (bring it to this workspace) */
-      xfw_window_activate (window, NULL, event->time, NULL);
+      xfw_window_activate (window, (guint64) event->time, NULL);
     }
   else if (event->button == 3)
     {
@@ -1136,9 +1136,30 @@ window_menu_plugin_menu_window_item_new (XfwWindow *window,
           if (xfw_window_is_minimized (window)
               && plugin->minimized_icon_lucency < 100)
             {
-              lucent = xfce_gdk_pixbuf_lucent (pixbuf, plugin->minimized_icon_lucency);
+              /* Inline implementation for libxfce4ui < 4.21 */
+              lucent = gdk_pixbuf_copy (pixbuf);
               if (G_LIKELY (lucent != NULL))
-                pixbuf = lucent;
+                {
+                  guchar *pixels = gdk_pixbuf_get_pixels (lucent);
+                  gint width = gdk_pixbuf_get_width (lucent);
+                  gint height = gdk_pixbuf_get_height (lucent);
+                  gint rowstride = gdk_pixbuf_get_rowstride (lucent);
+                  gint n_channels = gdk_pixbuf_get_n_channels (lucent);
+
+                  if (gdk_pixbuf_get_has_alpha (lucent))
+                    {
+                      for (gint y = 0; y < height; y++)
+                        {
+                          guchar *p = pixels + y * rowstride;
+                          for (gint x = 0; x < width; x++)
+                            {
+                              p[3] = p[3] * plugin->minimized_icon_lucency / 100;
+                              p += n_channels;
+                            }
+                        }
+                    }
+                  pixbuf = lucent;
+                }
             }
 
           /* set the menu item label */

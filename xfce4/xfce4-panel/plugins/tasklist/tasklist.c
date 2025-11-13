@@ -136,6 +136,7 @@ tasklist_plugin_construct (XfcePanelPlugin *panel_plugin)
     { "include-all-blinking", G_TYPE_BOOLEAN },
     { "middle-click", G_TYPE_UINT },
     { "label-decorations", G_TYPE_BOOLEAN },
+    { "show-recent-files", G_TYPE_BOOLEAN },
     { NULL }
   };
 
@@ -264,6 +265,7 @@ tasklist_plugin_configure_plugin (XfcePanelPlugin *panel_plugin)
   TASKLIST_DIALOG_BIND ("sort-order", "active")
   TASKLIST_DIALOG_BIND ("window-scrolling", "active")
   TASKLIST_DIALOG_BIND ("middle-click", "active")
+  TASKLIST_DIALOG_BIND ("show-recent-files", "active")
 
   if (!WINDOWING_IS_X11 ())
     {
