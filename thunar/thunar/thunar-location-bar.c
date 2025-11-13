@@ -30,7 +30,7 @@
 
 struct _ThunarLocationBarClass
 {
-  GtkBinClass __parent__;
+  GtkBoxClass __parent__;
 
   /* signals */
   void (*entry_done) (void);
@@ -39,7 +39,7 @@ struct _ThunarLocationBarClass
 
 struct _ThunarLocationBar
 {
-  GtkBin __parent__;
+  GtkBox __parent__;
 
   ThunarPreferences *preferences;
 
@@ -47,6 +47,11 @@ struct _ThunarLocationBar
 
   GtkWidget *locationEntry;
   GtkWidget *locationButtons;
+  GtkWidget *toggle_button;
+  GtkWidget *location_container;  /* Container for the actual location widget */
+
+  /* Toggle state for Ctrl+L */
+  gboolean   toggle_mode_active;
 };
 
 
@@ -88,9 +93,14 @@ thunar_location_bar_on_enry_edit_done (ThunarLocationEntry *entry,
 static void
 thunar_location_bar_request_temp_entry (ThunarLocationBar *bar,
                                         const gchar       *initial_text);
+static void
+thunar_location_bar_toggle_mode (ThunarLocationBar *bar);
+static void
+thunar_location_bar_toggle_button_clicked (GtkButton         *button,
+                                           ThunarLocationBar *bar);
 
 
-G_DEFINE_TYPE_WITH_CODE (ThunarLocationBar, thunar_location_bar, GTK_TYPE_BIN,
+G_DEFINE_TYPE_WITH_CODE (ThunarLocationBar, thunar_location_bar, GTK_TYPE_BOX,
                          G_IMPLEMENT_INTERFACE (THUNAR_TYPE_NAVIGATOR, thunar_location_bar_navigator_init));
 
 
@@ -140,11 +150,33 @@ thunar_location_bar_class_init (ThunarLocationBarClass *klass)
 static void
 thunar_location_bar_init (ThunarLocationBar *bar)
 {
+  GtkWidget *icon;
+
   bar->preferences = thunar_preferences_get ();
 
   bar->current_directory = NULL;
   bar->locationEntry = NULL;
   bar->locationButtons = NULL;
+  bar->toggle_mode_active = FALSE;
+
+  /* Set up the box properties */
+  gtk_orientable_set_orientation (GTK_ORIENTABLE (bar), GTK_ORIENTATION_HORIZONTAL);
+  gtk_box_set_spacing (GTK_BOX (bar), 2);
+
+  /* Create a container (GtkBin) for the location widget */
+  bar->location_container = gtk_event_box_new ();
+  gtk_box_pack_start (GTK_BOX (bar), bar->location_container, TRUE, TRUE, 0);
+  gtk_widget_show (bar->location_container);
+
+  /* Create toggle button for switching between breadcrumb and entry modes */
+  bar->toggle_button = gtk_button_new ();
+  icon = gtk_image_new_from_icon_name ("go-jump", GTK_ICON_SIZE_SMALL_TOOLBAR);
+  gtk_button_set_image (GTK_BUTTON (bar->toggle_button), icon);
+  gtk_widget_set_tooltip_text (bar->toggle_button, "Toggle between breadcrumb and text entry path bar");
+  gtk_widget_set_can_focus (bar->toggle_button, FALSE);
+  gtk_box_pack_end (GTK_BOX (bar), bar->toggle_button, FALSE, FALSE, 0);
+  gtk_widget_show (bar->toggle_button);
+  g_signal_connect (bar->toggle_button, "clicked", G_CALLBACK (thunar_location_bar_toggle_button_clicked), bar);
 
   thunar_location_bar_settings_changed (bar);
 
@@ -166,12 +198,14 @@ thunar_location_bar_finalize (GObject *object)
 
   if (bar->locationEntry)
     {
-      gtk_widget_destroy (bar->locationEntry);
+      if (gtk_widget_get_parent (bar->locationEntry) == NULL)
+        gtk_widget_destroy (bar->locationEntry);
       g_object_unref (bar->locationEntry);
     }
   if (bar->locationButtons)
     {
-      gtk_widget_destroy (bar->locationButtons);
+      if (gtk_widget_get_parent (bar->locationButtons) == NULL)
+        gtk_widget_destroy (bar->locationButtons);
       g_object_unref (bar->locationButtons);
     }
 
@@ -254,7 +288,7 @@ thunar_location_bar_set_current_directory (ThunarNavigator *navigator,
   if (current_directory)
     g_object_ref (current_directory);
 
-  if ((child = gtk_bin_get_child (GTK_BIN (bar))) && THUNAR_IS_NAVIGATOR (child))
+  if (bar->location_container && GTK_IS_BIN (bar->location_container) && (child = gtk_bin_get_child (GTK_BIN (bar->location_container))) && THUNAR_IS_NAVIGATOR (child))
     thunar_navigator_set_current_directory (THUNAR_NAVIGATOR (child), current_directory);
 
   g_object_notify (G_OBJECT (bar), "current-directory");
@@ -269,7 +303,7 @@ thunar_location_bar_install_widget (ThunarLocationBar *bar,
   GtkWidget *installedWidget, *child;
 
   /* check if the the right type is already installed */
-  if ((child = gtk_bin_get_child (GTK_BIN (bar))) && G_TYPE_CHECK_INSTANCE_TYPE (child, type))
+  if (bar->location_container && GTK_IS_BIN (bar->location_container) && (child = gtk_bin_get_child (GTK_BIN (bar->location_container))) && G_TYPE_CHECK_INSTANCE_TYPE (child, type))
     return child;
 
   if (type == THUNAR_TYPE_LOCATION_ENTRY)
@@ -298,11 +332,14 @@ thunar_location_bar_install_widget (ThunarLocationBar *bar,
 
   thunar_navigator_set_current_directory (THUNAR_NAVIGATOR (installedWidget), bar->current_directory);
 
-  if ((child = gtk_bin_get_child (GTK_BIN (bar))))
-    gtk_container_remove (GTK_CONTAINER (bar), child);
+  if (bar->location_container && GTK_IS_BIN (bar->location_container) && (child = gtk_bin_get_child (GTK_BIN (bar->location_container))))
+    gtk_container_remove (GTK_CONTAINER (bar->location_container), child);
 
-  gtk_container_add (GTK_CONTAINER (bar), installedWidget);
-  gtk_widget_show (installedWidget);
+  if (bar->location_container)
+    {
+      gtk_container_add (GTK_CONTAINER (bar->location_container), installedWidget);
+      gtk_widget_show (installedWidget);
+    }
 
   return installedWidget;
 }
@@ -349,7 +386,10 @@ thunar_location_bar_request_entry (ThunarLocationBar *bar,
 {
   GtkWidget *child;
 
-  child = gtk_bin_get_child (GTK_BIN (bar));
+  if (!bar->location_container || !GTK_IS_BIN (bar->location_container))
+    return;
+
+  child = gtk_bin_get_child (GTK_BIN (bar->location_container));
 
   _thunar_return_if_fail (child != NULL && GTK_IS_WIDGET (child));
 
@@ -428,4 +468,96 @@ gchar *
 thunar_location_bar_get_search_query (ThunarLocationBar *bar)
 {
   return (bar->locationEntry != NULL) ? thunar_location_entry_get_search_query (THUNAR_LOCATION_ENTRY (bar->locationEntry)) : g_strdup ("");
+}
+
+
+
+/**
+ * thunar_location_bar_toggle_mode:
+ * @bar : a #ThunarLocationBar.
+ *
+ * Toggles between breadcrumb buttons mode and text entry mode.
+ * When in buttons mode, switches to entry mode. When in entry mode,
+ * switches back to buttons mode.
+ **/
+static void
+thunar_location_bar_toggle_mode (ThunarLocationBar *bar)
+{
+  GtkWidget *child;
+  GType      new_type;
+
+  _thunar_return_if_fail (THUNAR_IS_LOCATION_BAR (bar));
+
+  if (!bar->location_container || !GTK_IS_BIN (bar->location_container))
+    return;
+
+  child = gtk_bin_get_child (GTK_BIN (bar->location_container));
+
+  /* Determine which mode to switch to */
+  if (child == NULL || THUNAR_IS_LOCATION_BUTTONS (child))
+    {
+      /* No child or currently in buttons mode, switch to entry mode */
+      new_type = THUNAR_TYPE_LOCATION_ENTRY;
+    }
+  else if (THUNAR_IS_LOCATION_ENTRY (child))
+    {
+      /* Currently in entry mode, switch to buttons mode */
+      new_type = THUNAR_TYPE_LOCATION_BUTTONS;
+    }
+  else
+    {
+      /* Unknown type, default to entry mode */
+      new_type = THUNAR_TYPE_LOCATION_ENTRY;
+    }
+
+  /* Install the new widget type */
+  child = thunar_location_bar_install_widget (bar, new_type);
+
+  /* If we switched to entry mode, focus it and select all text */
+  if (THUNAR_IS_LOCATION_ENTRY (child))
+    {
+      thunar_location_entry_accept_focus (THUNAR_LOCATION_ENTRY (child), NULL);
+    }
+
+  /* Mark toggle mode as active */
+  bar->toggle_mode_active = TRUE;
+
+  /* Notify that toggle happened */
+  g_object_notify (G_OBJECT (bar), "current-directory");
+}
+
+
+
+/**
+ * thunar_location_bar_toggle_button_clicked:
+ * @button : the toggle button that was clicked.
+ * @bar    : a #ThunarLocationBar.
+ *
+ * Callback for when the toggle button is clicked.
+ * Switches between breadcrumb and text entry modes.
+ **/
+static void
+thunar_location_bar_toggle_button_clicked (GtkButton         *button,
+                                           ThunarLocationBar *bar)
+{
+  _thunar_return_if_fail (GTK_IS_BUTTON (button));
+  _thunar_return_if_fail (THUNAR_IS_LOCATION_BAR (bar));
+
+  thunar_location_bar_toggle_mode (bar);
+}
+
+
+
+/**
+ * thunar_location_bar_toggle_entry:
+ * @bar : a #ThunarLocationBar.
+ *
+ * Public function to toggle between breadcrumb and text entry modes.
+ * This is called by Ctrl+L to switch modes.
+ **/
+void
+thunar_location_bar_toggle_entry (ThunarLocationBar *bar)
+{
+  _thunar_return_if_fail (THUNAR_IS_LOCATION_BAR (bar));
+  thunar_location_bar_toggle_mode (bar);
 }

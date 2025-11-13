@@ -156,6 +156,14 @@ thunar_location_buttons_context_menu (ThunarLocationButton  *button,
 static void
 thunar_location_buttons_gone (ThunarLocationButton  *button,
                               ThunarLocationButtons *buttons);
+static void
+thunar_location_buttons_sibling_selected (ThunarLocationButton  *button,
+                                          ThunarFile            *sibling_file,
+                                          ThunarLocationButtons *buttons);
+static gboolean
+thunar_location_buttons_scroll_event (GtkWidget             *widget,
+                                      GdkEventScroll        *event,
+                                      ThunarLocationButtons *buttons);
 
 
 
@@ -339,6 +347,10 @@ thunar_location_buttons_init (ThunarLocationButtons *buttons)
   buttons->action_mgr = g_object_new (THUNAR_TYPE_ACTION_MANAGER, "widget", GTK_WIDGET (buttons), NULL);
   g_signal_connect_swapped (G_OBJECT (buttons->action_mgr), "change-directory", G_CALLBACK (thunar_location_buttons_set_current_directory), buttons);
   g_signal_connect_swapped (G_OBJECT (buttons->action_mgr), "open-new-tab", G_CALLBACK (thunar_navigator_open_new_tab), buttons);
+
+  /* Enable mouse wheel scrolling for the path bar */
+  gtk_widget_add_events (GTK_WIDGET (buttons), GDK_SCROLL_MASK | GDK_SMOOTH_SCROLL_MASK);
+  g_signal_connect (G_OBJECT (buttons), "scroll-event", G_CALLBACK (thunar_location_buttons_scroll_event), buttons);
 }
 
 
@@ -1018,6 +1030,7 @@ thunar_location_buttons_make_button (ThunarLocationButtons *buttons,
   g_signal_connect (G_OBJECT (button), "location-button-clicked", G_CALLBACK (thunar_location_buttons_clicked), buttons);
   g_signal_connect (G_OBJECT (button), "gone", G_CALLBACK (thunar_location_buttons_gone), buttons);
   g_signal_connect (G_OBJECT (button), "popup-menu", G_CALLBACK (thunar_location_buttons_context_menu), buttons);
+  g_signal_connect (G_OBJECT (button), "sibling-selected", G_CALLBACK (thunar_location_buttons_sibling_selected), buttons);
 
   return button;
 }
@@ -1328,4 +1341,80 @@ thunar_location_buttons_context_menu (ThunarLocationButton  *button,
 
   thunar_gtk_menu_run (GTK_MENU (context_menu));
   return TRUE;
+}
+
+
+
+static void
+thunar_location_buttons_sibling_selected (ThunarLocationButton  *button,
+                                          ThunarFile            *sibling_file,
+                                          ThunarLocationButtons *buttons)
+{
+  _thunar_return_if_fail (THUNAR_IS_LOCATION_BUTTON (button));
+  _thunar_return_if_fail (THUNAR_IS_FILE (sibling_file));
+  _thunar_return_if_fail (THUNAR_IS_LOCATION_BUTTONS (buttons));
+
+  /* Navigate to the selected sibling directory */
+  thunar_navigator_change_directory (THUNAR_NAVIGATOR (buttons), sibling_file);
+}
+
+
+
+static gboolean
+thunar_location_buttons_scroll_event (GtkWidget             *widget,
+                                      GdkEventScroll        *event,
+                                      ThunarLocationButtons *buttons)
+{
+  GdkScrollDirection direction;
+  gdouble            delta_x, delta_y;
+
+  _thunar_return_val_if_fail (THUNAR_IS_LOCATION_BUTTONS (buttons), FALSE);
+
+  /* Handle smooth scrolling */
+  if (event->direction == GDK_SCROLL_SMOOTH)
+    {
+      if (!gdk_event_get_scroll_deltas ((GdkEvent *)event, &delta_x, &delta_y))
+        return FALSE;
+
+      /* Determine scroll direction based on delta */
+      if (delta_y < 0 || delta_x < 0)
+        direction = GDK_SCROLL_LEFT;
+      else if (delta_y > 0 || delta_x > 0)
+        direction = GDK_SCROLL_RIGHT;
+      else
+        return FALSE;
+    }
+  else
+    {
+      direction = event->direction;
+    }
+
+  /* Scroll the path bar */
+  switch (direction)
+    {
+    case GDK_SCROLL_LEFT:
+    case GDK_SCROLL_UP:
+      /* Scroll left (show parent directories) */
+      if (gtk_widget_get_sensitive (buttons->left_slider))
+        {
+          thunar_location_buttons_scroll_left (buttons->left_slider, buttons);
+          return TRUE;
+        }
+      break;
+
+    case GDK_SCROLL_RIGHT:
+    case GDK_SCROLL_DOWN:
+      /* Scroll right (show child directories) */
+      if (gtk_widget_get_sensitive (buttons->right_slider))
+        {
+          thunar_location_buttons_scroll_right (buttons->right_slider, buttons);
+          return TRUE;
+        }
+      break;
+
+    default:
+      break;
+    }
+
+  return FALSE;
 }

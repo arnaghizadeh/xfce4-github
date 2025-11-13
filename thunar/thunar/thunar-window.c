@@ -737,6 +737,7 @@ static XfceGtkActionEntry thunar_window_action_entries[] =
     { THUNAR_WINDOW_ACTION_STOP_SEARCH,                    "<Actions>/ThunarWindow/stop-search",                     "Escape",               XFCE_GTK_MENU_ITEM,       N_ ("Stop search for files"),  NULL,                                                                                "",                        G_CALLBACK (thunar_window_action_stop_search),         },
 
     { THUNAR_WINDOW_ACTION_MENU,                           "<Actions>/Thunarwindow/menu",                            "",                     XFCE_GTK_IMAGE_MENU_ITEM, N_ ("Menu"),                   N_ ("Show the menu"),                                                                "open-menu",               G_CALLBACK (thunar_window_action_menu),                },
+    { THUNAR_WINDOW_ACTION_TOGGLE_LOCATION_BAR,            "<Actions>/ThunarWindow/toggle-location-bar",             "",                     XFCE_GTK_IMAGE_MENU_ITEM, N_ ("Toggle Path Bar Style"),  N_ ("Switch between breadcrumb and text entry path bar"),                            "edit-select-all",         G_CALLBACK (thunar_window_action_open_location),       },
     { 0,                                                   "<Actions>/ThunarWindow/open-file-menu",                  "F10",                  0,                        NULL,                          NULL,                                                                                NULL,                      G_CALLBACK (thunar_window_action_open_file_menu),      },
 };
 /* clang-format on */
@@ -5260,8 +5261,12 @@ thunar_window_action_open_bookmark (GFile *g_file)
 static gboolean
 thunar_window_action_open_location (ThunarWindow *window)
 {
-  /* just use the "start-open-location" callback */
-  thunar_window_start_open_location (window, NULL);
+  /* Toggle between breadcrumb and text entry modes */
+  /* Ensure the location toolbar is visible */
+  gtk_widget_show (window->location_toolbar);
+
+  /* Toggle the location bar mode */
+  thunar_location_bar_toggle_entry (THUNAR_LOCATION_BAR (window->location_bar));
 
   /* required in case of shortcut activation, in order to signal that the accel key got handled */
   return TRUE;
@@ -7073,6 +7078,7 @@ thunar_window_location_toolbar_create (ThunarWindow *window)
 
   /* add remaining toolbar items */
   thunar_window_create_toolbar_item_from_action (window, THUNAR_WINDOW_ACTION_RELOAD, item_order++);
+  thunar_window_create_toolbar_item_from_action (window, THUNAR_WINDOW_ACTION_TOGGLE_LOCATION_BAR, item_order++);
   window->location_toolbar_item_search = thunar_window_create_toolbar_toggle_item_from_action (window, THUNAR_WINDOW_ACTION_SEARCH, window->search_mode, item_order++);
 
   /* add custom actions to the toolbar */

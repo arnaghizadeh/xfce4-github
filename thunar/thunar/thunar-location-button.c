@@ -27,6 +27,7 @@
 
 #include "thunar/thunar-application.h"
 #include "thunar/thunar-dnd.h"
+#include "thunar/thunar-folder.h"
 #include "thunar/thunar-gio-extensions.h"
 #include "thunar/thunar-icon-factory.h"
 #include "thunar/thunar-location-button.h"
@@ -51,6 +52,7 @@ enum
 {
   CLICKED,
   GONE,
+  SIBLING_SELECTED,
   LAST_SIGNAL,
 };
 
@@ -129,6 +131,12 @@ static void
 thunar_location_button_enter_timeout_destroy (gpointer user_data);
 static void
 thunar_location_button_clicked (ThunarLocationButton *button);
+static void
+thunar_location_button_dropdown_clicked (GtkWidget            *arrow,
+                                         ThunarLocationButton *button);
+static void
+thunar_location_button_sibling_menu_item_activate (GtkMenuItem          *menu_item,
+                                                   ThunarLocationButton *button);
 
 
 
@@ -144,6 +152,7 @@ struct _ThunarLocationButton
   GtkWidget *image;
   GtkWidget *label;
   GtkWidget *bold_label;
+  GtkWidget *dropdown_arrow;  /* Arrow button for sibling directories */
 
   /* the current icon state (i.e. accepting drops) */
   ThunarFileIconState file_icon_state;
@@ -248,6 +257,22 @@ thunar_location_button_class_init (ThunarLocationButtonClass *klass)
                 0, NULL, NULL,
                 g_cclosure_marshal_VOID__VOID,
                 G_TYPE_NONE, 0);
+
+  /**
+   * ThunarLocationButton::sibling-selected:
+   * @location_button : a #ThunarLocationButton.
+   * @sibling_file    : the selected sibling #ThunarFile.
+   *
+   * Emitted when a sibling directory is selected from the dropdown menu.
+   **/
+  location_button_signals[SIBLING_SELECTED] =
+  g_signal_new (I_ ("sibling-selected"),
+                G_TYPE_FROM_CLASS (klass),
+                G_SIGNAL_RUN_LAST,
+                0, NULL, NULL,
+                g_cclosure_marshal_VOID__OBJECT,
+                G_TYPE_NONE, 1,
+                THUNAR_TYPE_FILE);
 }
 
 
@@ -255,7 +280,9 @@ thunar_location_button_class_init (ThunarLocationButtonClass *klass)
 static void
 thunar_location_button_init (ThunarLocationButton *button)
 {
-  GtkWidget *hbox;
+  GtkWidget         *hbox;
+  ThunarPreferences *preferences;
+  gboolean           use_symbolic_icons;
 
   /* initialize the toggle button */
   g_signal_connect (button, "notify::active", G_CALLBACK (thunar_location_button_active_changed), NULL);
@@ -294,10 +321,26 @@ thunar_location_button_init (ThunarLocationButton *button)
   gtk_label_set_attributes (GTK_LABEL (button->bold_label), thunar_pango_attr_list_bold ());
   /* but don't show it, as it is only a fake to retrieve the bold size */
 
+  /* get icon preferences */
+  preferences = thunar_preferences_get ();
+  g_object_get (G_OBJECT (preferences), "misc-symbolic-icons-in-toolbar", &use_symbolic_icons, NULL);
+  g_object_unref (G_OBJECT (preferences));
+
+  /* create the dropdown arrow for sibling directories */
+  button->dropdown_arrow = gtk_image_new_from_icon_name (
+      use_symbolic_icons ? "pan-down-symbolic" : "pan-down",
+      GTK_ICON_SIZE_MENU);
+  gtk_widget_set_margin_start (button->dropdown_arrow, 2);
+  gtk_widget_set_margin_end (button->dropdown_arrow, 0);
+  gtk_widget_set_opacity (button->dropdown_arrow, 0.7);  /* Subtle appearance */
+  gtk_box_pack_end (GTK_BOX (hbox), button->dropdown_arrow, FALSE, FALSE, 0);
+  gtk_widget_show (button->dropdown_arrow);
+
   /* add widget to css class which matches all buttons in the path-bar */
   /* keep as well the old name 'path-bar-button'. It might be used by themes */
   gtk_style_context_add_class (gtk_widget_get_style_context (GTK_WIDGET (button)), "location-button");
   gtk_style_context_add_class (gtk_widget_get_style_context (GTK_WIDGET (button)), "path-bar-button");
+  gtk_style_context_add_class (gtk_widget_get_style_context (GTK_WIDGET (button)), "breadcrumb-button");
 }
 
 
@@ -563,9 +606,29 @@ static gboolean
 thunar_location_button_button_press_event (GtkWidget      *button,
                                            GdkEventButton *event)
 {
-  gboolean popup_menu_return;
+  ThunarLocationButton *location_button = THUNAR_LOCATION_BUTTON (button);
+  gboolean              popup_menu_return;
+  GtkAllocation         arrow_alloc;
+  gint                  button_x, button_y;
 
   _thunar_return_val_if_fail (THUNAR_IS_LOCATION_BUTTON (button), FALSE);
+
+  /* check if click is on the dropdown arrow */
+  if (event->button == 1 && location_button->dropdown_arrow != NULL)
+    {
+      gtk_widget_get_allocation (location_button->dropdown_arrow, &arrow_alloc);
+      gtk_widget_translate_coordinates (GTK_WIDGET (button), location_button->dropdown_arrow,
+                                       (gint)event->x, (gint)event->y, &button_x, &button_y);
+
+      /* Check if the click is within the arrow area (with some padding) */
+      if (button_x >= -4 && button_x <= arrow_alloc.width + 4 &&
+          button_y >= 0 && button_y <= arrow_alloc.height)
+        {
+          /* Show the sibling dropdown menu */
+          thunar_location_button_dropdown_clicked (location_button->dropdown_arrow, location_button);
+          return TRUE;
+        }
+    }
 
   /* check if we can handle the button event */
   if (G_UNLIKELY (event->button == 2))
@@ -1039,4 +1102,220 @@ thunar_location_button_clicked (ThunarLocationButton *location_button)
 {
   _thunar_return_if_fail (THUNAR_IS_LOCATION_BUTTON (location_button));
   g_signal_emit (G_OBJECT (location_button), location_button_signals[CLICKED], 0, FALSE);
+}
+
+
+
+static gint
+thunar_location_button_compare_files (gconstpointer a,
+                                      gconstpointer b)
+{
+  ThunarFile *file_a = THUNAR_FILE (a);
+  ThunarFile *file_b = THUNAR_FILE (b);
+
+  return g_utf8_collate (thunar_file_get_display_name (file_a),
+                         thunar_file_get_display_name (file_b));
+}
+
+
+
+static void
+thunar_location_button_sibling_menu_item_activate (GtkMenuItem          *menu_item,
+                                                   ThunarLocationButton *button)
+{
+  ThunarFile *sibling_file;
+
+  _thunar_return_if_fail (GTK_IS_MENU_ITEM (menu_item));
+  _thunar_return_if_fail (THUNAR_IS_LOCATION_BUTTON (button));
+
+  /* Get the sibling file from the menu item */
+  sibling_file = g_object_get_data (G_OBJECT (menu_item), "thunar-file");
+  if (G_LIKELY (sibling_file != NULL))
+    {
+      /* Emit the sibling-selected signal */
+      g_signal_emit (G_OBJECT (button), location_button_signals[SIBLING_SELECTED], 0, sibling_file);
+    }
+}
+
+
+
+static void
+thunar_location_button_dropdown_clicked (GtkWidget            *arrow,
+                                         ThunarLocationButton *button)
+{
+  ThunarFile       *parent_file;
+  GFile            *parent_gfile;
+  GFileEnumerator  *enumerator;
+  GFileInfo        *info;
+  GList            *sibling_files = NULL;
+  GList            *lp;
+  GtkWidget        *menu;
+  GtkWidget        *menu_item;
+  GtkWidget        *image;
+  ThunarFile       *sibling;
+  GtkIconTheme     *icon_theme;
+  const gchar      *icon_name;
+  GError           *error = NULL;
+
+  _thunar_return_if_fail (THUNAR_IS_LOCATION_BUTTON (button));
+
+  /* Get the parent directory of the current button's file */
+  if (button->file == NULL)
+    return;
+
+  parent_file = thunar_file_get_parent (button->file, NULL);
+  if (parent_file == NULL)
+    {
+      /* This is a root directory, no siblings to show */
+      menu = gtk_menu_new ();
+      gtk_menu_set_reserve_toggle_size (GTK_MENU (menu), FALSE);
+      menu_item = gtk_menu_item_new_with_label (_("Root directory"));
+      gtk_widget_set_sensitive (menu_item, FALSE);
+      gtk_widget_show (menu_item);
+      gtk_menu_shell_append (GTK_MENU_SHELL (menu), menu_item);
+      gtk_menu_popup_at_widget (GTK_MENU (menu),
+                                GTK_WIDGET (button),
+                                GDK_GRAVITY_SOUTH_WEST,
+                                GDK_GRAVITY_NORTH_WEST,
+                                NULL);
+      return;
+    }
+
+  /* Get the GFile for the parent directory */
+  parent_gfile = thunar_file_get_file (parent_file);
+
+  /* Enumerate files directly using GIO */
+  enumerator = g_file_enumerate_children (parent_gfile,
+                                          G_FILE_ATTRIBUTE_STANDARD_NAME ","
+                                          G_FILE_ATTRIBUTE_STANDARD_TYPE ","
+                                          G_FILE_ATTRIBUTE_STANDARD_IS_SYMLINK,
+                                          G_FILE_QUERY_INFO_NONE,
+                                          NULL,
+                                          &error);
+  if (enumerator == NULL)
+    {
+      g_object_unref (parent_file);
+      if (error != NULL)
+        g_error_free (error);
+      return;
+    }
+
+  /* Collect all directories (siblings) */
+  while ((info = g_file_enumerator_next_file (enumerator, NULL, NULL)) != NULL)
+    {
+      if (g_file_info_get_file_type (info) == G_FILE_TYPE_DIRECTORY)
+        {
+          GFile *child_gfile = g_file_get_child (parent_gfile, g_file_info_get_name (info));
+          sibling = thunar_file_get (child_gfile, NULL);
+          if (sibling != NULL)
+            sibling_files = g_list_prepend (sibling_files, sibling);
+          g_object_unref (child_gfile);
+        }
+      g_object_unref (info);
+    }
+
+  g_object_unref (enumerator);
+
+  /* Sort the sibling files alphabetically */
+  sibling_files = g_list_sort (sibling_files, thunar_location_button_compare_files);
+
+  /* Create the popup menu */
+  menu = gtk_menu_new ();
+  gtk_menu_set_reserve_toggle_size (GTK_MENU (menu), FALSE);
+
+  /* Get icon theme for icons */
+  icon_theme = gtk_icon_theme_get_for_screen (gtk_widget_get_screen (GTK_WIDGET (button)));
+
+  /* Handle the case when there are no sibling directories */
+  if (sibling_files == NULL)
+    {
+      menu_item = gtk_menu_item_new_with_label (_("No subdirectories"));
+      gtk_widget_set_sensitive (menu_item, FALSE);
+      gtk_widget_show (menu_item);
+      gtk_menu_shell_append (GTK_MENU_SHELL (menu), menu_item);
+
+      /* Clean up and show menu */
+      g_object_unref (parent_file);
+
+      gtk_menu_popup_at_widget (GTK_MENU (menu),
+                                GTK_WIDGET (button),
+                                GDK_GRAVITY_SOUTH_WEST,
+                                GDK_GRAVITY_NORTH_WEST,
+                                NULL);
+      return;
+    }
+
+  /* Add menu items for each sibling directory */
+  for (lp = sibling_files; lp != NULL; lp = lp->next)
+    {
+      sibling = THUNAR_FILE (lp->data);
+
+      /* Create menu item with the folder name */
+      menu_item = gtk_menu_item_new ();
+
+      /* Create a box to hold icon and label */
+      GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+      gtk_container_add (GTK_CONTAINER (menu_item), box);
+
+      /* Add folder icon */
+      icon_name = thunar_file_get_icon_name (sibling, THUNAR_FILE_ICON_STATE_DEFAULT, icon_theme);
+      image = gtk_image_new_from_icon_name (icon_name, GTK_ICON_SIZE_MENU);
+      gtk_box_pack_start (GTK_BOX (box), image, FALSE, FALSE, 0);
+
+      /* Add folder name with symlink indicator if applicable */
+      gchar *display_text;
+      if (thunar_file_is_symlink (sibling))
+        {
+          /* Mark symlinks with an arrow indicator */
+          display_text = g_strdup_printf ("%s \u2192", thunar_file_get_display_name (sibling));
+        }
+      else
+        {
+          display_text = g_strdup (thunar_file_get_display_name (sibling));
+        }
+
+      GtkWidget *label = gtk_label_new (display_text);
+      g_free (display_text);
+      gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+      gtk_box_pack_start (GTK_BOX (box), label, TRUE, TRUE, 0);
+
+      /* Mark the current directory in the menu */
+      if (g_file_equal (thunar_file_get_file (sibling), thunar_file_get_file (button->file)))
+        {
+          gtk_label_set_attributes (GTK_LABEL (label), thunar_pango_attr_list_bold ());
+        }
+
+      /* Add tooltip for remote or mounted directories */
+      if (!thunar_file_is_local (sibling))
+        {
+          gtk_widget_set_tooltip_text (menu_item, _("Remote directory"));
+        }
+      else if (thunar_file_is_mountpoint (sibling))
+        {
+          gtk_widget_set_tooltip_text (menu_item, _("Mount point"));
+        }
+
+      gtk_widget_show_all (menu_item);
+
+      /* Store the file in the menu item */
+      g_object_set_data_full (G_OBJECT (menu_item), "thunar-file",
+                              g_object_ref (sibling), g_object_unref);
+
+      /* Connect the activate signal */
+      g_signal_connect (G_OBJECT (menu_item), "activate",
+                       G_CALLBACK (thunar_location_button_sibling_menu_item_activate), button);
+
+      gtk_menu_shell_append (GTK_MENU_SHELL (menu), menu_item);
+    }
+
+  /* Clean up the sibling files list */
+  g_list_free_full (sibling_files, g_object_unref);
+  g_object_unref (parent_file);
+
+  /* Show the menu */
+  gtk_menu_popup_at_widget (GTK_MENU (menu),
+                            GTK_WIDGET (button),
+                            GDK_GRAVITY_SOUTH_WEST,
+                            GDK_GRAVITY_NORTH_WEST,
+                            NULL);
 }
