@@ -28,6 +28,9 @@
 
 #include "thunar/thunar-action-manager.h"
 #include "thunar/thunar-application.h"
+#include "thunar/thunar-archive-dialog.h"
+#include "thunar/thunar-archive-job.h"
+#include "thunar/thunar-archive-utils.h"
 #include "thunar/thunar-browser.h"
 #include "thunar/thunar-chooser-dialog.h"
 #include "thunar/thunar-clipboard-manager.h"
@@ -40,6 +43,8 @@
 #include "thunar/thunar-io-scan-directory.h"
 #include "thunar/thunar-preferences.h"
 #include "thunar/thunar-private.h"
+#include "thunar/thunar-progress-dialog.h"
+#include "thunar/thunar-progress-view.h"
 #include "thunar/thunar-properties-dialog.h"
 #include "thunar/thunar-renamer-dialog.h"
 #include "thunar/thunar-sendto-model.h"
@@ -231,6 +236,10 @@ static gboolean
 thunar_action_manager_action_paste_link (ThunarActionManager *action_mgr);
 static void
 thunar_action_manager_action_edit_launcher (ThunarActionManager *action_mgr);
+static gboolean
+thunar_action_manager_action_compress (ThunarActionManager *action_mgr);
+static gboolean
+thunar_action_manager_action_extract_here (ThunarActionManager *action_mgr);
 static void
 thunar_action_manager_sendto_device (ThunarActionManager *action_mgr,
                                      ThunarDevice        *device);
@@ -360,6 +369,8 @@ static XfceGtkActionEntry thunar_action_manager_action_entries[] =
     { THUNAR_ACTION_MANAGER_ACTION_MOUNT,              NULL,                                               "",                  XFCE_GTK_MENU_ITEM,       N_ ("_Mount"),                          N_ ("Mount the selected device"),                                                                            NULL,                  G_CALLBACK (thunar_action_manager_action_mount),               },
     { THUNAR_ACTION_MANAGER_ACTION_UNMOUNT,            NULL,                                               "",                  XFCE_GTK_MENU_ITEM,       N_ ("_Unmount"),                        N_ ("Unmount the selected device"),                                                                          NULL,                  G_CALLBACK (thunar_action_manager_action_unmount),             },
     { THUNAR_ACTION_MANAGER_ACTION_EJECT,              NULL,                                               "",                  XFCE_GTK_MENU_ITEM,       N_ ("_Eject"),                          N_ ("Eject the selected device"),                                                                            NULL,                  G_CALLBACK (thunar_action_manager_action_eject),               },
+    { THUNAR_ACTION_MANAGER_ACTION_COMPRESS,           "<Actions>/ThunarActionManager/compress",           "",                  XFCE_GTK_IMAGE_MENU_ITEM, N_ ("Co_mpress..."),                    N_ ("Create an archive from the selected files"),                                                            "package-x-generic",   G_CALLBACK (thunar_action_manager_action_compress),            },
+    { THUNAR_ACTION_MANAGER_ACTION_EXTRACT_HERE,       "<Actions>/ThunarActionManager/extract-here",       "",                  XFCE_GTK_IMAGE_MENU_ITEM, N_ ("E_xtract Here"),                   N_ ("Extract the selected archive to the current folder"),                                                   "package-x-generic",   G_CALLBACK (thunar_action_manager_action_extract_here),        },
 };
 /* clang-format on */
 
@@ -1976,6 +1987,42 @@ thunar_action_manager_append_menu_item (ThunarActionManager      *action_mgr,
         gtk_widget_set_sensitive (item, thunar_device_is_mounted (action_mgr->device_to_process));
       return item;
 
+    case THUNAR_ACTION_MANAGER_ACTION_COMPRESS:
+      /* Only show compress if files are selected */
+      if (!action_mgr->files_are_selected)
+        return NULL;
+      tooltip_text = ngettext ("Create an archive from the selected file",
+                               "Create an archive from the selected files", action_mgr->n_files_to_process);
+      item = xfce_gtk_image_menu_item_new_from_icon_name (action_entry->menu_item_label_text, tooltip_text,
+                                                           action_entry->accel_path, action_entry->callback,
+                                                           G_OBJECT (action_mgr), action_entry->menu_item_icon_name, menu);
+      gtk_widget_set_sensitive (item, thunar_archive_utils_can_compress ());
+      return item;
+
+    case THUNAR_ACTION_MANAGER_ACTION_EXTRACT_HERE:
+      {
+        /* Only show extract if archives are selected */
+        gboolean has_archive = FALSE;
+        GList *lp;
+        for (lp = action_mgr->files_to_process; lp != NULL; lp = lp->next)
+          {
+            if (thunar_archive_utils_is_archive (THUNAR_FILE (lp->data)))
+              {
+                has_archive = TRUE;
+                break;
+              }
+          }
+        if (!has_archive)
+          return NULL;
+
+        tooltip_text = ngettext ("Extract the selected archive to the current folder",
+                                 "Extract the selected archives to the current folder", action_mgr->n_files_to_process);
+        item = xfce_gtk_image_menu_item_new_from_icon_name (action_entry->menu_item_label_text, tooltip_text,
+                                                             action_entry->accel_path, action_entry->callback,
+                                                             G_OBJECT (action_mgr), action_entry->menu_item_icon_name, menu);
+        return item;
+      }
+
     default:
       return xfce_gtk_menu_item_new_from_action_entry (action_entry, G_OBJECT (action_mgr), GTK_MENU_SHELL (menu));
     }
@@ -3570,6 +3617,161 @@ thunar_action_manager_new_files_created (ThunarActionManager *action_mgr,
   _thunar_return_if_fail (THUNAR_IS_ACTION_MANAGER (action_mgr));
 
   g_signal_emit (action_mgr, action_manager_signals[NEW_FILES_CREATED], 0, new_thunar_files);
+}
+
+
+
+/**
+ * thunar_action_manager_action_compress:
+ * @action_mgr : a #ThunarActionManager instance
+ *
+ * Compresses the selected files into an archive.
+ *
+ * Return value: TRUE if the action was handled.
+ **/
+static gboolean
+thunar_action_manager_action_compress (ThunarActionManager *action_mgr)
+{
+  GtkWidget         *dialog;
+  GtkWidget         *window;
+  GList             *source_files = NULL;
+  GList             *lp;
+  GFile             *archive_file;
+  GFile             *parent_dir;
+  ThunarArchiveFormat format;
+  ThunarJob         *job;
+
+  _thunar_return_val_if_fail (THUNAR_IS_ACTION_MANAGER (action_mgr), FALSE);
+
+  /* Check if compression utilities are available */
+  if (!thunar_archive_utils_can_compress ())
+    {
+      thunar_dialogs_show_error (GTK_WIDGET (action_mgr->widget), NULL,
+                                 _("Compression utilities (zip or tar) are not available"));
+      return FALSE;
+    }
+
+  /* Make sure we have files selected */
+  if (action_mgr->files_to_process == NULL)
+    return FALSE;
+
+  /* Get parent directory */
+  parent_dir = thunar_file_get_file (THUNAR_FILE (action_mgr->files_to_process->data));
+  parent_dir = g_file_get_parent (parent_dir);
+  if (parent_dir == NULL)
+    {
+      if (action_mgr->current_directory != NULL)
+        parent_dir = g_object_ref (thunar_file_get_file (action_mgr->current_directory));
+      else
+        return FALSE;
+    }
+
+  /* Convert ThunarFile list to GFile list */
+  for (lp = action_mgr->files_to_process; lp != NULL; lp = lp->next)
+    {
+      GFile *file = thunar_file_get_file (THUNAR_FILE (lp->data));
+      source_files = g_list_prepend (source_files, g_object_ref (file));
+    }
+  source_files = g_list_reverse (source_files);
+
+  /* Show compression dialog */
+  window = gtk_widget_get_toplevel (GTK_WIDGET (action_mgr->widget));
+  dialog = thunar_archive_dialog_new (GTK_IS_WINDOW (window) ? GTK_WINDOW (window) : NULL,
+                                      parent_dir,
+                                      source_files);
+
+  if (gtk_dialog_run (GTK_DIALOG (dialog)) == GTK_RESPONSE_OK)
+    {
+      /* Get archive file and format */
+      archive_file = thunar_archive_dialog_get_archive_file (THUNAR_ARCHIVE_DIALOG (dialog));
+      format = thunar_archive_dialog_get_format (THUNAR_ARCHIVE_DIALOG (dialog));
+
+      /* Create compression job */
+      job = thunar_archive_job_compress (source_files, archive_file, format);
+
+      /* Launch the job - it will handle its own execution and cleanup */
+      thunar_job_launch (job);
+      g_object_unref (job);
+      g_object_unref (archive_file);
+    }
+
+  gtk_widget_destroy (dialog);
+  g_list_free_full (source_files, g_object_unref);
+  g_object_unref (parent_dir);
+
+  return TRUE;
+}
+
+
+
+/**
+ * thunar_action_manager_action_extract_here:
+ * @action_mgr : a #ThunarActionManager instance
+ *
+ * Extracts the selected archive(s) to the current directory.
+ *
+ * Return value: TRUE if the action was handled.
+ **/
+static gboolean
+thunar_action_manager_action_extract_here (ThunarActionManager *action_mgr)
+{
+  GList               *lp;
+  ThunarFile          *thunar_file;
+  ThunarArchiveFormat  format;
+  GFile               *archive_file;
+  GFile               *target_dir;
+  ThunarJob           *job;
+
+  _thunar_return_val_if_fail (THUNAR_IS_ACTION_MANAGER (action_mgr), FALSE);
+
+  /* Make sure we have files selected */
+  if (action_mgr->files_to_process == NULL)
+    return FALSE;
+
+  /* Extract each selected archive */
+  for (lp = action_mgr->files_to_process; lp != NULL; lp = lp->next)
+    {
+      thunar_file = THUNAR_FILE (lp->data);
+
+      /* Check if it's an archive */
+      if (!thunar_archive_utils_is_archive (thunar_file))
+        continue;
+
+      /* Get format */
+      format = thunar_archive_utils_get_format (thunar_file);
+
+      /* Check if we can extract this format */
+      if (!thunar_archive_utils_can_extract (format))
+        {
+          gchar *basename = g_file_get_basename (thunar_file_get_file (thunar_file));
+          thunar_dialogs_show_error (GTK_WIDGET (action_mgr->widget), NULL,
+                                     _("Cannot extract \"%s\": required utilities not available"), basename);
+          g_free (basename);
+          continue;
+        }
+
+      /* Get archive file and target directory */
+      archive_file = thunar_file_get_file (thunar_file);
+      target_dir = g_file_get_parent (archive_file);
+
+      if (target_dir == NULL)
+        {
+          if (action_mgr->current_directory != NULL)
+            target_dir = g_object_ref (thunar_file_get_file (action_mgr->current_directory));
+          else
+            continue;
+        }
+
+      /* Create extraction job */
+      job = thunar_archive_job_extract (archive_file, target_dir);
+
+      /* Launch the job - it will handle its own execution and cleanup */
+      thunar_job_launch (job);
+      g_object_unref (job);
+      g_object_unref (target_dir);
+    }
+
+  return TRUE;
 }
 
 
