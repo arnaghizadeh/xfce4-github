@@ -194,6 +194,11 @@ thunar_standard_view_scroll_to_file (ThunarView *view,
                                      gboolean    use_align,
                                      gfloat      row_align,
                                      gfloat      col_align);
+static void
+thunar_standard_view_name_renderer_edited (GtkCellRendererText *renderer,
+                                           const gchar         *path_string,
+                                           const gchar         *text,
+                                           ThunarStandardView  *standard_view);
 static GdkDragAction
 thunar_standard_view_get_dest_actions (ThunarStandardView *standard_view,
                                        GdkDragContext     *context,
@@ -485,6 +490,12 @@ struct _ThunarStandardViewPrivate
   /* Used in order to throttle selection changes to prevent lag */
   gboolean selection_changed_requested;
   guint    selection_changed_timeout_source;
+
+  /* click-to-rename (slow double-click) support */
+  GtkTreePath *click_to_rename_path;       /* path of last clicked item for rename */
+  guint32      click_to_rename_timestamp;  /* timestamp of the last click */
+  guint        click_to_rename_timer_id;   /* timer ID for triggering rename */
+  gboolean     click_to_rename_pending;    /* whether a rename is pending */
 };
 
 /* clang-format off */
@@ -1021,6 +1032,11 @@ thunar_standard_view_init (ThunarStandardView *standard_view)
                 "xalign", 0.5,
                 NULL);
   g_object_ref_sink (G_OBJECT (standard_view->name_renderer));
+
+  /* connect the edited signal for inline renaming support */
+  g_signal_connect (G_OBJECT (standard_view->name_renderer), "edited",
+                    G_CALLBACK (thunar_standard_view_name_renderer_edited), standard_view);
+
   g_object_bind_property (G_OBJECT (standard_view->preferences), "misc-highlighting-enabled", G_OBJECT (standard_view->name_renderer), "highlighting-enabled", G_BINDING_SYNC_CREATE);
 
   /* this is required in order to disable foreground & background colors on the text renderers when the feature is disabled */
@@ -1041,7 +1057,279 @@ thunar_standard_view_init (ThunarStandardView *standard_view)
   standard_view->priv->css_provider = NULL;
 
   g_mutex_init (&standard_view->priv->statusbar_text_mutex);
+
+  /* initialize click-to-rename state */
+  standard_view->priv->click_to_rename_path = NULL;
+  standard_view->priv->click_to_rename_timestamp = 0;
+  standard_view->priv->click_to_rename_timer_id = 0;
+  standard_view->priv->click_to_rename_pending = FALSE;
+
+  /* ensure click-to-rename is cancelled when the current directory changes */
+  g_signal_connect_swapped (standard_view, "notify::current-directory",
+                            G_CALLBACK (thunar_standard_view_click_to_rename_cancel), standard_view);
 }
+
+
+
+/**
+ * thunar_standard_view_click_to_rename_cancel:
+ * @standard_view : a #ThunarStandardView.
+ *
+ * Cancels any pending click-to-rename operation.
+ **/
+void
+thunar_standard_view_click_to_rename_cancel (ThunarStandardView *standard_view)
+{
+  _thunar_return_if_fail (THUNAR_IS_STANDARD_VIEW (standard_view));
+
+  /* cancel any pending timer */
+  if (standard_view->priv->click_to_rename_timer_id != 0)
+    {
+      g_source_remove (standard_view->priv->click_to_rename_timer_id);
+      standard_view->priv->click_to_rename_timer_id = 0;
+    }
+
+  /* clear the stored path */
+  if (standard_view->priv->click_to_rename_path != NULL)
+    {
+      gtk_tree_path_free (standard_view->priv->click_to_rename_path);
+      standard_view->priv->click_to_rename_path = NULL;
+    }
+
+  standard_view->priv->click_to_rename_pending = FALSE;
+  standard_view->priv->click_to_rename_timestamp = 0;
+}
+
+
+
+static gboolean
+thunar_standard_view_click_to_rename_timeout (gpointer user_data)
+{
+  ThunarStandardView *standard_view = THUNAR_STANDARD_VIEW (user_data);
+  GtkWidget          *view;
+
+  _thunar_return_val_if_fail (THUNAR_IS_STANDARD_VIEW (standard_view), FALSE);
+
+  /* reset the timer id */
+  standard_view->priv->click_to_rename_timer_id = 0;
+
+  /* check if we should start editing */
+  if (standard_view->priv->click_to_rename_pending && standard_view->priv->click_to_rename_path != NULL)
+    {
+      /* get the child view widget */
+      view = gtk_bin_get_child (GTK_BIN (standard_view));
+
+      /* only trigger rename if the view is realized and has focus */
+      if (view != NULL && gtk_widget_get_realized (view) && gtk_widget_has_focus (view))
+        {
+          /* trigger the rename by setting the cursor with editing enabled */
+          (*THUNAR_STANDARD_VIEW_GET_CLASS (standard_view)->set_cursor) (standard_view,
+                                                                          standard_view->priv->click_to_rename_path,
+                                                                          TRUE);
+        }
+    }
+
+  /* clean up */
+  thunar_standard_view_click_to_rename_cancel (standard_view);
+
+  return FALSE;
+}
+
+
+
+/**
+ * thunar_standard_view_click_to_rename_on_release:
+ * @standard_view : a #ThunarStandardView.
+ * @path          : the #GtkTreePath that was clicked.
+ * @timestamp     : the event timestamp.
+ *
+ * Should be called on button release events on a file name.
+ * Returns %TRUE if this was the second click in a slow double-click
+ * and the rename timer has been started, %FALSE otherwise.
+ **/
+gboolean
+thunar_standard_view_click_to_rename_on_release (ThunarStandardView *standard_view,
+                                                  GtkTreePath        *path,
+                                                  guint32             timestamp)
+{
+  gboolean click_to_rename_enabled;
+  guint    click_to_rename_timeout;
+  guint32  time_diff;
+  GtkWidget *view;
+
+  _thunar_return_val_if_fail (THUNAR_IS_STANDARD_VIEW (standard_view), FALSE);
+  _thunar_return_val_if_fail (path != NULL, FALSE);
+
+  /* make sure the view is properly initialized */
+  view = gtk_bin_get_child (GTK_BIN (standard_view));
+  if (view == NULL || !gtk_widget_get_realized (view))
+    return FALSE;
+
+  /* make sure the model is loaded */
+  if (standard_view->model == NULL)
+    return FALSE;
+
+  /* check if the feature is enabled */
+  g_object_get (standard_view->preferences,
+                "misc-click-to-rename", &click_to_rename_enabled,
+                "misc-click-to-rename-timeout", &click_to_rename_timeout,
+                NULL);
+
+  if (!click_to_rename_enabled)
+    {
+      thunar_standard_view_click_to_rename_cancel (standard_view);
+      return FALSE;
+    }
+
+  /* check if we have a previous click to compare with */
+  if (standard_view->priv->click_to_rename_path != NULL)
+    {
+      /* check if this is on the same path */
+      if (gtk_tree_path_compare (standard_view->priv->click_to_rename_path, path) == 0)
+        {
+          /* calculate time difference */
+          time_diff = timestamp - standard_view->priv->click_to_rename_timestamp;
+
+          /* check if this is a slow double-click (between min timeout and 2 seconds) */
+          if (time_diff >= click_to_rename_timeout && time_diff <= 2000)
+            {
+              /* this is a slow double-click, schedule the rename */
+              standard_view->priv->click_to_rename_pending = TRUE;
+
+              /* start a timer to trigger the rename after a short delay
+               * this allows time for any drag operation to be cancelled */
+              if (standard_view->priv->click_to_rename_timer_id != 0)
+                g_source_remove (standard_view->priv->click_to_rename_timer_id);
+
+              standard_view->priv->click_to_rename_timer_id =
+                g_timeout_add (100, thunar_standard_view_click_to_rename_timeout, standard_view);
+
+              return TRUE;
+            }
+        }
+    }
+
+  /* store the current click for comparison with the next one */
+  if (standard_view->priv->click_to_rename_path != NULL)
+    gtk_tree_path_free (standard_view->priv->click_to_rename_path);
+
+  standard_view->priv->click_to_rename_path = gtk_tree_path_copy (path);
+  standard_view->priv->click_to_rename_timestamp = timestamp;
+  standard_view->priv->click_to_rename_pending = FALSE;
+
+  return FALSE;
+}
+
+
+
+/**
+ * thunar_standard_view_click_to_rename_invalidate:
+ * @standard_view : a #ThunarStandardView.
+ *
+ * Invalidates the click-to-rename state without canceling any pending timer.
+ * This should be called when the selection changes or when the view receives
+ * events that should reset the click-to-rename sequence.
+ **/
+void
+thunar_standard_view_click_to_rename_invalidate (ThunarStandardView *standard_view)
+{
+  _thunar_return_if_fail (THUNAR_IS_STANDARD_VIEW (standard_view));
+
+  /* cancel any pending timer */
+  if (standard_view->priv->click_to_rename_timer_id != 0)
+    {
+      g_source_remove (standard_view->priv->click_to_rename_timer_id);
+      standard_view->priv->click_to_rename_timer_id = 0;
+    }
+
+  /* clear the stored path but keep the timestamp to avoid issues */
+  if (standard_view->priv->click_to_rename_path != NULL)
+    {
+      gtk_tree_path_free (standard_view->priv->click_to_rename_path);
+      standard_view->priv->click_to_rename_path = NULL;
+    }
+
+  standard_view->priv->click_to_rename_pending = FALSE;
+}
+
+
+
+/**
+ * thunar_standard_view_name_renderer_edited:
+ * @renderer     : the #GtkCellRenderer that was edited.
+ * @path_string  : the string representation of the edited path.
+ * @text         : the new text after editing.
+ * @standard_view: the #ThunarStandardView.
+ *
+ * Handles the "edited" signal from the name renderer. This is called
+ * when the user finishes inline editing of a file name.
+ **/
+static void
+thunar_standard_view_name_renderer_edited (GtkCellRendererText *renderer,
+                                           const gchar         *path_string,
+                                           const gchar         *text,
+                                           ThunarStandardView  *standard_view)
+{
+  GtkTreePath *path;
+  GtkTreeIter  iter;
+  ThunarFile  *file;
+  GError      *error = NULL;
+  const gchar *old_name;
+
+  _thunar_return_if_fail (GTK_IS_CELL_RENDERER_TEXT (renderer));
+  _thunar_return_if_fail (THUNAR_IS_STANDARD_VIEW (standard_view));
+
+  /* reset the editable flag */
+  g_object_set (G_OBJECT (renderer), "editable", FALSE, NULL);
+
+  /* cancel any pending click-to-rename */
+  thunar_standard_view_click_to_rename_cancel (standard_view);
+
+  /* convert the path string to a tree path */
+  path = gtk_tree_path_new_from_string (path_string);
+  if (G_UNLIKELY (path == NULL))
+    return;
+
+  /* get the file from the model */
+  if (gtk_tree_model_get_iter (GTK_TREE_MODEL (standard_view->model), &iter, path))
+    {
+      file = thunar_tree_view_model_get_file (standard_view->model, &iter);
+      if (G_LIKELY (file != NULL))
+        {
+          /* check if the name actually changed */
+          old_name = thunar_file_get_display_name (file);
+          if (g_strcmp0 (old_name, text) != 0)
+            {
+              /* check if the file can be renamed */
+              if (thunar_file_is_renameable (file))
+                {
+                  /* perform the rename */
+                  if (!thunar_file_rename (file, text, NULL, FALSE, &error))
+                    {
+                      /* display error message */
+                      thunar_dialogs_show_error (GTK_WIDGET (standard_view), error,
+                                                 _ ("Failed to rename \"%s\""),
+                                                 thunar_file_get_display_name (file));
+                      g_clear_error (&error);
+                    }
+                }
+              else
+                {
+                  /* display error message */
+                  thunar_dialogs_show_error (GTK_WIDGET (standard_view), NULL,
+                                             _ ("The file \"%s\" cannot be renamed"),
+                                             thunar_file_get_display_name (file));
+                }
+            }
+
+          g_object_unref (file);
+        }
+    }
+
+  gtk_tree_path_free (path);
+}
+
+
 
 static void
 thunar_standard_view_store_sort_column (ThunarStandardView *standard_view)
@@ -1321,6 +1609,12 @@ thunar_standard_view_finalize (GObject *object)
 
   /* release the scroll_to_files hash table */
   g_hash_table_destroy (standard_view->priv->scroll_to_files);
+
+  /* cleanup click-to-rename state */
+  if (standard_view->priv->click_to_rename_timer_id != 0)
+    g_source_remove (standard_view->priv->click_to_rename_timer_id);
+  if (standard_view->priv->click_to_rename_path != NULL)
+    gtk_tree_path_free (standard_view->priv->click_to_rename_path);
 
   (*G_OBJECT_CLASS (thunar_standard_view_parent_class)->finalize) (object);
 }

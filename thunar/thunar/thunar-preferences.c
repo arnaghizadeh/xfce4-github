@@ -108,6 +108,8 @@ enum
   PROP_MISC_SHOW_DELETE_ACTION,
   PROP_MISC_SINGLE_CLICK,
   PROP_MISC_SINGLE_CLICK_TIMEOUT,
+  PROP_MISC_CLICK_TO_RENAME,
+  PROP_MISC_CLICK_TO_RENAME_TIMEOUT,
   PROP_MISC_SMALL_TOOLBAR_ICONS,
   PROP_MISC_TAB_CLOSE_MIDDLE_CLICK,
   PROP_MISC_TEXT_BESIDE_ICONS,
@@ -1005,6 +1007,34 @@ thunar_preferences_class_init (ThunarPreferencesClass *klass)
                      "MiscSingleClickTimeout",
                      NULL,
                      0u, G_MAXUINT, 500u,
+                     G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+  /**
+   * ThunarPreferences:misc-click-to-rename:
+   *
+   * Whether to enable click-to-rename feature (slow double-click on filename).
+   * When enabled, clicking twice (with a delay) on a selected file's name
+   * will start inline rename mode, similar to Windows Explorer and Nemo.
+   **/
+  preferences_props[PROP_MISC_CLICK_TO_RENAME] =
+  g_param_spec_boolean ("misc-click-to-rename",
+                        "MiscClickToRename",
+                        NULL,
+                        TRUE,
+                        G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+  /**
+   * ThunarPreferences:misc-click-to-rename-timeout:
+   *
+   * The minimum delay in milliseconds between clicks for the click-to-rename
+   * feature. The delay must be longer than this value but shorter than
+   * 2 seconds to trigger rename mode. Default is 500ms.
+   **/
+  preferences_props[PROP_MISC_CLICK_TO_RENAME_TIMEOUT] =
+  g_param_spec_uint ("misc-click-to-rename-timeout",
+                     "MiscClickToRenameTimeout",
+                     NULL,
+                     200u, 2000u, 500u,
                      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
 
   /**

@@ -78,6 +78,10 @@ thunar_abstract_icon_view_button_release_event (XfceIconView           *view,
                                                 GdkEventButton         *event,
                                                 ThunarAbstractIconView *abstract_icon_view);
 static gboolean
+thunar_abstract_icon_view_click_to_rename_release_event (XfceIconView           *view,
+                                                          GdkEventButton         *event,
+                                                          ThunarAbstractIconView *abstract_icon_view);
+static gboolean
 thunar_abstract_icon_view_draw (XfceIconView           *view,
                                 cairo_t                *cr,
                                 ThunarAbstractIconView *abstract_icon_view);
@@ -189,6 +193,7 @@ thunar_abstract_icon_view_init (ThunarAbstractIconView *abstract_icon_view)
   view = xfce_icon_view_new ();
   g_signal_connect (G_OBJECT (view), "notify::model", G_CALLBACK (thunar_abstract_icon_view_notify_model), abstract_icon_view);
   g_signal_connect (G_OBJECT (view), "button-press-event", G_CALLBACK (thunar_abstract_icon_view_button_press_event), abstract_icon_view);
+  g_signal_connect (G_OBJECT (view), "button-release-event", G_CALLBACK (thunar_abstract_icon_view_click_to_rename_release_event), abstract_icon_view);
   g_signal_connect (G_OBJECT (view), "key-press-event", G_CALLBACK (thunar_abstract_icon_view_key_press_event), abstract_icon_view);
   g_signal_connect (G_OBJECT (view), "item-activated", G_CALLBACK (thunar_abstract_icon_view_item_activated), abstract_icon_view);
   g_signal_connect_swapped (G_OBJECT (view), "selection-changed", G_CALLBACK (thunar_standard_view_selection_changed), abstract_icon_view);
@@ -296,18 +301,19 @@ thunar_abstract_icon_view_set_cursor (ThunarStandardView *standard_view,
                                       gboolean            start_editing)
 {
   GtkCellRendererMode mode;
+  gboolean            editable;
 
   _thunar_return_if_fail (THUNAR_IS_ABSTRACT_ICON_VIEW (standard_view));
 
   /* make sure the name renderer is editable */
-  g_object_get (G_OBJECT (standard_view->name_renderer), "mode", &mode, NULL);
-  g_object_set (G_OBJECT (standard_view->name_renderer), "mode", GTK_CELL_RENDERER_MODE_EDITABLE, NULL);
+  g_object_get (G_OBJECT (standard_view->name_renderer), "mode", &mode, "editable", &editable, NULL);
+  g_object_set (G_OBJECT (standard_view->name_renderer), "mode", GTK_CELL_RENDERER_MODE_EDITABLE, "editable", TRUE, NULL);
 
   /* tell the abstract_icon view to start editing the given item */
   xfce_icon_view_set_cursor (XFCE_ICON_VIEW (gtk_bin_get_child (GTK_BIN (standard_view))), path, standard_view->name_renderer, start_editing);
 
   /* reset the name renderer mode */
-  g_object_set (G_OBJECT (standard_view->name_renderer), "mode", mode, NULL);
+  g_object_set (G_OBJECT (standard_view->name_renderer), "mode", mode, "editable", editable, NULL);
 }
 
 
@@ -419,6 +425,10 @@ thunar_abstract_icon_view_button_press_event (XfceIconView           *view,
   window = gtk_widget_get_toplevel (GTK_WIDGET (abstract_icon_view));
   thunar_window_focus_view (THUNAR_WINDOW (window), GTK_WIDGET (abstract_icon_view));
 
+  /* cancel click-to-rename on double-click or right-click */
+  if (event->type == GDK_2BUTTON_PRESS || event->button == 3 || event->button == 2)
+    thunar_standard_view_click_to_rename_cancel (THUNAR_STANDARD_VIEW (abstract_icon_view));
+
   if (event->type == GDK_BUTTON_PRESS && event->button == 3)
     {
       /* open the context menu on right clicks */
@@ -486,6 +496,80 @@ thunar_abstract_icon_view_button_press_event (XfceIconView           *view,
       return TRUE;
     }
 
+  return FALSE;
+}
+
+
+
+/**
+ * thunar_abstract_icon_view_click_to_rename_release_event:
+ * @view               : the #XfceIconView.
+ * @event              : the #GdkEventButton.
+ * @abstract_icon_view : the #ThunarAbstractIconView.
+ *
+ * Handles button release events for click-to-rename functionality.
+ * This enables "slow double-click" renaming similar to Windows Explorer,
+ * where clicking on the name text (not the icon) of an already-selected
+ * item will trigger inline renaming after a short delay.
+ *
+ * Return value: %FALSE to allow event propagation.
+ **/
+static gboolean
+thunar_abstract_icon_view_click_to_rename_release_event (XfceIconView           *view,
+                                                          GdkEventButton         *event,
+                                                          ThunarAbstractIconView *abstract_icon_view)
+{
+  GtkTreePath     *path;
+  GtkCellRenderer *cell;
+  GList           *selected_items;
+  gint             n_selected;
+
+  _thunar_return_val_if_fail (XFCE_IS_ICON_VIEW (view), FALSE);
+  _thunar_return_val_if_fail (THUNAR_IS_ABSTRACT_ICON_VIEW (abstract_icon_view), FALSE);
+
+  /* only handle left button releases */
+  if (event->button != 1)
+    return FALSE;
+
+  /* check if there's exactly one item selected */
+  selected_items = xfce_icon_view_get_selected_items (view);
+  n_selected = g_list_length (selected_items);
+
+  if (n_selected != 1)
+    {
+      /* cancel click-to-rename if selection changed */
+      thunar_standard_view_click_to_rename_invalidate (THUNAR_STANDARD_VIEW (abstract_icon_view));
+      g_list_free_full (selected_items, (GDestroyNotify) gtk_tree_path_free);
+      return FALSE;
+    }
+
+  /* get the path and cell at the click position */
+  if (xfce_icon_view_get_item_at_pos (view, event->x, event->y, &path, &cell))
+    {
+      /* check if the clicked item is the selected one AND the click was on the name (not icon) */
+      if (gtk_tree_path_compare (path, selected_items->data) == 0
+          && cell == THUNAR_STANDARD_VIEW (abstract_icon_view)->name_renderer)
+        {
+          /* this is a click on the name of the already-selected item, check for slow double-click */
+          thunar_standard_view_click_to_rename_on_release (THUNAR_STANDARD_VIEW (abstract_icon_view),
+                                                            path, event->time);
+        }
+      else
+        {
+          /* clicked on icon or a different item, invalidate */
+          thunar_standard_view_click_to_rename_invalidate (THUNAR_STANDARD_VIEW (abstract_icon_view));
+        }
+      gtk_tree_path_free (path);
+    }
+  else
+    {
+      /* clicked on empty space, invalidate */
+      thunar_standard_view_click_to_rename_invalidate (THUNAR_STANDARD_VIEW (abstract_icon_view));
+    }
+
+  g_list_free_full (selected_items, (GDestroyNotify) gtk_tree_path_free);
+
+  /* don't stop event propagation */
   return FALSE;
 }
 

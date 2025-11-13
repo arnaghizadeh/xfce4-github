@@ -253,6 +253,15 @@ thunar_standard_view_set_terminal_widget (ThunarStandardView   *standard_view,
 void
 thunar_standard_view_select_first_file (ThunarStandardView *standard_view);
 
+void
+thunar_standard_view_click_to_rename_cancel (ThunarStandardView *standard_view);
+gboolean
+thunar_standard_view_click_to_rename_on_release (ThunarStandardView *standard_view,
+                                                  GtkTreePath        *path,
+                                                  guint32             timestamp);
+void
+thunar_standard_view_click_to_rename_invalidate (ThunarStandardView *standard_view);
+
 G_END_DECLS;
 
 #endif /* !__THUNAR_STANDARD_VIEW_H__ */

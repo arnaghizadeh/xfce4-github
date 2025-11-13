@@ -103,6 +103,10 @@ thunar_details_view_button_press_event (GtkTreeView       *tree_view,
                                         GdkEventButton    *event,
                                         ThunarDetailsView *details_view);
 static gboolean
+thunar_details_view_button_release_event (GtkTreeView       *tree_view,
+                                          GdkEventButton    *event,
+                                          ThunarDetailsView *details_view);
+static gboolean
 thunar_details_view_key_press_event (GtkTreeView       *tree_view,
                                      GdkEventKey       *event,
                                      ThunarDetailsView *details_view);
@@ -299,6 +303,8 @@ thunar_details_view_init (ThunarDetailsView *details_view)
                     G_CALLBACK (thunar_details_view_notify_model), details_view);
   g_signal_connect (G_OBJECT (details_view->tree_view), "button-press-event",
                     G_CALLBACK (thunar_details_view_button_press_event), details_view);
+  g_signal_connect (G_OBJECT (details_view->tree_view), "button-release-event",
+                    G_CALLBACK (thunar_details_view_button_release_event), details_view);
   g_signal_connect (G_OBJECT (details_view->tree_view), "key-press-event",
                     G_CALLBACK (thunar_details_view_key_press_event), details_view);
   g_signal_connect (G_OBJECT (details_view->tree_view), "row-activated",
@@ -650,13 +656,14 @@ thunar_details_view_set_cursor (ThunarStandardView *standard_view,
                                 gboolean            start_editing)
 {
   GtkCellRendererMode mode;
+  gboolean            editable;
   GtkTreeViewColumn  *column;
 
   _thunar_return_if_fail (THUNAR_IS_DETAILS_VIEW (standard_view));
 
   /* make sure the name renderer is editable */
-  g_object_get (G_OBJECT (standard_view->name_renderer), "mode", &mode, NULL);
-  g_object_set (G_OBJECT (standard_view->name_renderer), "mode", GTK_CELL_RENDERER_MODE_EDITABLE, NULL);
+  g_object_get (G_OBJECT (standard_view->name_renderer), "mode", &mode, "editable", &editable, NULL);
+  g_object_set (G_OBJECT (standard_view->name_renderer), "mode", GTK_CELL_RENDERER_MODE_EDITABLE, "editable", TRUE, NULL);
 
   /* tell the tree view to start editing the given row */
   column = gtk_tree_view_get_column (GTK_TREE_VIEW (gtk_bin_get_child (GTK_BIN (standard_view))), 0);
@@ -665,7 +672,7 @@ thunar_details_view_set_cursor (ThunarStandardView *standard_view,
                                     start_editing);
 
   /* reset the name renderer mode */
-  g_object_set (G_OBJECT (standard_view->name_renderer), "mode", mode, NULL);
+  g_object_set (G_OBJECT (standard_view->name_renderer), "mode", mode, "editable", editable, NULL);
 }
 
 
@@ -821,6 +828,10 @@ thunar_details_view_button_press_event (GtkTreeView       *tree_view,
   /* give focus to the clicked view */
   window = gtk_widget_get_toplevel (GTK_WIDGET (details_view));
   thunar_window_focus_view (THUNAR_WINDOW (window), GTK_WIDGET (details_view));
+
+  /* cancel click-to-rename on double-click, right-click, or middle-click */
+  if (event->type == GDK_2BUTTON_PRESS || event->button == 3 || event->button == 2)
+    thunar_standard_view_click_to_rename_cancel (THUNAR_STANDARD_VIEW (details_view));
 
   /* get the current selection */
   selection = gtk_tree_view_get_selection (tree_view);
@@ -990,6 +1001,78 @@ thunar_details_view_button_press_event (GtkTreeView       *tree_view,
     }
 
   gtk_tree_path_free (path);
+  return FALSE;
+}
+
+
+
+/**
+ * thunar_details_view_button_release_event:
+ * @tree_view    : the #GtkTreeView.
+ * @event        : the #GdkEventButton.
+ * @details_view : the #ThunarDetailsView.
+ *
+ * Handles button release events for click-to-rename functionality
+ * in the details view. This enables "slow double-click" renaming
+ * similar to Windows Explorer.
+ *
+ * Return value: %FALSE to allow event propagation.
+ **/
+static gboolean
+thunar_details_view_button_release_event (GtkTreeView       *tree_view,
+                                          GdkEventButton    *event,
+                                          ThunarDetailsView *details_view)
+{
+  GtkTreeSelection  *selection;
+  GtkTreePath       *path;
+  GtkTreeViewColumn *column;
+  GtkTreeViewColumn *name_column;
+  gint               n_selected;
+
+  _thunar_return_val_if_fail (GTK_IS_TREE_VIEW (tree_view), FALSE);
+  _thunar_return_val_if_fail (THUNAR_IS_DETAILS_VIEW (details_view), FALSE);
+
+  /* only handle left button releases in the bin window */
+  if (event->button != 1 || event->window != gtk_tree_view_get_bin_window (tree_view))
+    return FALSE;
+
+  /* get the current selection */
+  selection = gtk_tree_view_get_selection (tree_view);
+  n_selected = gtk_tree_selection_count_selected_rows (selection);
+
+  /* only allow click-to-rename when exactly one item is selected */
+  if (n_selected != 1)
+    {
+      thunar_standard_view_click_to_rename_invalidate (THUNAR_STANDARD_VIEW (details_view));
+      return FALSE;
+    }
+
+  /* get the column showing the filenames */
+  name_column = details_view->columns[THUNAR_COLUMN_NAME];
+
+  /* check if the click was in the name column */
+  if (gtk_tree_view_get_path_at_pos (tree_view, event->x, event->y, &path, &column, NULL, NULL))
+    {
+      if (column == name_column && gtk_tree_selection_path_is_selected (selection, path))
+        {
+          /* this is a click on the already-selected item's name, check for slow double-click */
+          thunar_standard_view_click_to_rename_on_release (THUNAR_STANDARD_VIEW (details_view),
+                                                            path, event->time);
+        }
+      else
+        {
+          /* clicked on a different column or item, invalidate */
+          thunar_standard_view_click_to_rename_invalidate (THUNAR_STANDARD_VIEW (details_view));
+        }
+      gtk_tree_path_free (path);
+    }
+  else
+    {
+      /* clicked on empty space, invalidate */
+      thunar_standard_view_click_to_rename_invalidate (THUNAR_STANDARD_VIEW (details_view));
+    }
+
+  /* don't stop event propagation */
   return FALSE;
 }
 

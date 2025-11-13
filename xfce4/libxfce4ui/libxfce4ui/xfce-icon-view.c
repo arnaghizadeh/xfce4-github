@@ -2398,19 +2398,22 @@ xfce_icon_view_start_editing (XfceIconView *icon_view,
       editable = gtk_cell_renderer_start_editing (info->cell, event, GTK_WIDGET (icon_view),
                                                   path_string, &cell_area, &cell_area, 0);
 
-      /* ugly hack, but works */
-      if (g_object_class_find_property (G_OBJECT_GET_CLASS (editable), "has-frame") != NULL)
-        g_object_set (editable, "has-frame", TRUE, NULL);
+      if (G_LIKELY (editable != NULL))
+        {
+          /* ugly hack, but works */
+          if (g_object_class_find_property (G_OBJECT_GET_CLASS (editable), "has-frame") != NULL)
+            g_object_set (editable, "has-frame", TRUE, NULL);
 
-      /* setup the editing widget */
-      priv->edited_item = item;
-      priv->editable = editable;
-      info->editing = TRUE;
+          /* setup the editing widget */
+          priv->edited_item = item;
+          priv->editable = editable;
+          info->editing = TRUE;
 
-      xfce_icon_view_put (icon_view, GTK_WIDGET (editable), item, info->position);
-      gtk_cell_editable_start_editing (GTK_CELL_EDITABLE (editable), (GdkEvent *) event);
-      gtk_widget_grab_focus (GTK_WIDGET (editable));
-      g_signal_connect (G_OBJECT (editable), "remove-widget", G_CALLBACK (xfce_icon_view_remove_widget), icon_view);
+          xfce_icon_view_put (icon_view, GTK_WIDGET (editable), item, info->position);
+          gtk_cell_editable_start_editing (GTK_CELL_EDITABLE (editable), (GdkEvent *) event);
+          gtk_widget_grab_focus (GTK_WIDGET (editable));
+          g_signal_connect (G_OBJECT (editable), "remove-widget", G_CALLBACK (xfce_icon_view_remove_widget), icon_view);
+        }
 
       /* cleanup */
       g_free (path_string);
