@@ -57,14 +57,17 @@ sudo apt install \
 
 ### How This Replaces Your System Defaults
 
-This installation uses **`~/.local`** as the installation prefix (or `/usr/local` for system-wide installation). Here's how this automatically replaces your system defaults:
+This installation uses **`~/.local`** as the installation prefix (or `/usr/local` for system-wide installation). Here's how it replaces your system defaults:
 
-1. **PATH Precedence**: `~/.local/bin` comes before `/usr/bin` in your system's PATH
-2. **No Conflicts**: Your package manager (apt/dpkg) never touches `~/.local`, so no conflicts
-3. **No Sudo Required**: Everything installs to your home directory
-4. **Easy Uninstall**: Simply delete files from `~/.local` to revert to system defaults
+1. **PATH Precedence**: By adding `~/.local/bin` to the front of your PATH (in ~/.bashrc), it takes precedence over `/usr/bin`
+2. **Library Loading**: Setting `LD_LIBRARY_PATH` ensures the custom XFCE libraries are found before system libraries
+3. **No Conflicts**: Your package manager (apt/dpkg) never touches `~/.local`, so no conflicts with system packages
+4. **No Sudo Required**: Everything installs to your home directory
+5. **Easy Uninstall**: Remove the environment variable exports and delete files from `~/.local`
 
-When you run `thunar` or `xfce4-panel`, your system will automatically find and use the enhanced versions from `~/.local/bin` instead of the system versions in `/usr/bin`.
+When you run `thunar` or `xfce4-panel`, your system will find and use the enhanced versions from `~/.local/bin` instead of the system versions in `/usr/bin`.
+
+**Important**: The environment variables in `~/.bashrc` are critical for this to work. Without them, the system won't find the custom libraries.
 
 ### Installation Methods
 
@@ -154,7 +157,39 @@ ninja install
 cd ..
 ```
 
-### 3. Verify Installation
+### 3. Configure Environment Variables
+
+**CRITICAL**: For `~/.local` installations, you must configure environment variables so the system can find the custom libraries and components.
+
+Add the following to your `~/.bashrc` file:
+
+```bash
+# Custom XFCE components (Thunar and xfce4-panel)
+export PATH="/home/mehran/.local/bin:$PATH"
+export LD_LIBRARY_PATH="/home/mehran/.local/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
+export PKG_CONFIG_PATH="/home/mehran/.local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH"
+export XDG_DATA_DIRS="/home/mehran/.local/share:$XDG_DATA_DIRS"
+```
+
+Or use `$HOME/.local` instead of `/home/mehran/.local` for portability:
+
+```bash
+# Custom XFCE components (Thunar and xfce4-panel)
+export PATH="$HOME/.local/bin:$PATH"
+export LD_LIBRARY_PATH="$HOME/.local/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
+export PKG_CONFIG_PATH="$HOME/.local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH"
+export XDG_DATA_DIRS="$HOME/.local/share:$XDG_DATA_DIRS"
+```
+
+After adding these lines, reload your shell configuration:
+
+```bash
+source ~/.bashrc
+```
+
+**Note**: If you installed to `/usr/local` instead, you only need to run `sudo ldconfig` and don't need to modify environment variables.
+
+### 4. Verify Installation
 
 Check that the enhanced versions will be used:
 
@@ -163,23 +198,12 @@ which thunar          # Should show: ~/.local/bin/thunar (or /usr/local/bin/thun
 which xfce4-panel     # Should show: ~/.local/bin/xfce4-panel (or /usr/local/bin/xfce4-panel)
 ```
 
-If you used `~/.local` prefix, verify that `~/.local/bin` is in your PATH and comes before `/usr/bin`:
+Verify that libraries can be found:
 
 ```bash
-echo $PATH | tr ':' '\n' | cat -n | grep -E "\.local|/usr/bin"
+ldd ~/.local/bin/xfce4-panel | grep xfce4
+# Should show libraries from ~/.local/lib/x86_64-linux-gnu
 ```
-
-The `.local/bin` line number should be smaller than the `/usr/bin` line number.
-
-### 4. Update Library Cache (Optional)
-
-If you installed to `/usr/local` (system-wide), update the library cache:
-
-```bash
-sudo ldconfig
-```
-
-For `~/.local` installations, this is not needed as libraries are found via wrapper scripts.
 
 ## Post-Installation
 
@@ -262,7 +286,27 @@ If the custom features aren't working:
 
 To uninstall and revert to the system's default XFCE components:
 
-### Method 1: Using Meson/Make Uninstall
+### Step 1: Remove Environment Variables
+
+If you installed to `~/.local`, remove or comment out these lines from your `~/.bashrc`:
+
+```bash
+# Custom XFCE components (Thunar and xfce4-panel)
+export PATH="$HOME/.local/bin:$PATH"
+export LD_LIBRARY_PATH="$HOME/.local/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
+export PKG_CONFIG_PATH="$HOME/.local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH"
+export XDG_DATA_DIRS="$HOME/.local/share:$XDG_DATA_DIRS"
+```
+
+Then reload your shell:
+
+```bash
+source ~/.bashrc
+```
+
+### Step 2: Remove Files
+
+#### Method A: Using Meson/Make Uninstall
 
 For each component you installed, go to its build directory and run:
 
@@ -276,7 +320,7 @@ cd xfce4/exo
 make uninstall  # add sudo if you used /usr/local
 ```
 
-### Method 2: Manual Removal
+#### Method B: Manual Removal
 
 If you installed to `~/.local`:
 
