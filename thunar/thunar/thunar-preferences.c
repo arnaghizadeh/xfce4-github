@@ -75,6 +75,7 @@ enum
   PROP_LAST_SORT_ORDER,
   PROP_LAST_STATUSBAR_VISIBLE,
   PROP_LAST_IMAGE_PREVIEW_VISIBLE,
+  PROP_LAST_IMAGE_PREVIEW_SEPARATOR_POSITION,
   PROP_LAST_VIEW,
   PROP_LAST_WINDOW_HEIGHT,
   PROP_LAST_WINDOW_WIDTH,
@@ -608,6 +609,20 @@ thunar_preferences_class_init (ThunarPreferencesClass *klass)
                         NULL,
                         FALSE,
                         G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+  /**
+   * ThunarPreferences:last-image-preview-separator-position:
+   *
+   * The last position of the gutter in the main window,
+   * which separates the main view from the image preview pane.
+   * A value of -1 means the pane is collapsed (hidden).
+   **/
+  preferences_props[PROP_LAST_IMAGE_PREVIEW_SEPARATOR_POSITION] =
+  g_param_spec_int ("last-image-preview-separator-position",
+                    "LastImagePreviewSeparatorPosition",
+                    NULL,
+                    -1, G_MAXINT, -1,
+                    G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
 
   /**
    * ThunarPreferences:last-view:
@@ -1189,7 +1204,7 @@ thunar_preferences_class_init (ThunarPreferencesClass *klass)
                      "MiscImagePreviewMode",
                      NULL,
                      THUNAR_TYPE_IMAGE_PREVIEW_MODE,
-                     THUNAR_IMAGE_PREVIEW_MODE_EMBEDDED,
+                     THUNAR_IMAGE_PREVIEW_MODE_STANDALONE,
                      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
 
   /**
