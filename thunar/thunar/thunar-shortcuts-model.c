@@ -34,6 +34,7 @@
 
 #include "thunar/thunar-device-monitor.h"
 #include "thunar/thunar-file.h"
+#include "thunar/thunar-gio-extensions.h"
 #include "thunar/thunar-preferences.h"
 #include "thunar/thunar-private.h"
 #include "thunar/thunar-shortcuts-model.h"
@@ -178,6 +179,27 @@ static void
 thunar_shortcuts_model_file_destroyed (ThunarFile           *file,
                                        ThunarShortcutsModel *model);
 
+/* Favorites functions */
+static gboolean
+thunar_shortcuts_model_load_favorites (gpointer data);
+static gboolean
+thunar_shortcuts_model_reload_favorites (gpointer data);
+static void
+thunar_shortcuts_model_save_favorites (ThunarShortcutsModel *model);
+static void
+thunar_shortcuts_model_monitor_favorites_file (GFileMonitor     *monitor,
+                                               GFile            *file,
+                                               GFile            *other_file,
+                                               GFileMonitorEvent event_type,
+                                               gpointer          user_data);
+static void
+thunar_shortcuts_model_load_favorite_line (GFile       *file_path,
+                                           const gchar *name,
+                                           gint         row_num,
+                                           gpointer     user_data);
+static void
+thunar_shortcuts_model_shortcut_favorites (ThunarShortcutsModel *model);
+
 static GFile *
 thunar_shortcut_get_file (ThunarShortcut *shortcut);
 static void
@@ -217,6 +239,12 @@ struct _ThunarShortcutsModel
   guint         bookmarks_idle_id;
 
   guint busy_timeout_id;
+
+  /* Favorites */
+  gint64        favorites_time;
+  GFile        *favorites_file;
+  GFileMonitor *favorites_monitor;
+  guint         favorites_idle_id;
 };
 
 struct _ThunarShortcut
@@ -361,6 +389,10 @@ thunar_shortcuts_model_finalize (GObject *object)
   if (model->bookmarks_idle_id != 0)
     g_source_remove (model->bookmarks_idle_id);
 
+  /* stop favorites load idle */
+  if (model->favorites_idle_id != 0)
+    g_source_remove (model->favorites_idle_id);
+
   /* free all shortcuts */
   g_list_foreach (model->shortcuts, (GFunc) (void (*) (void)) thunar_shortcut_free, model);
   g_list_free (model->shortcuts);
@@ -380,6 +412,16 @@ thunar_shortcuts_model_finalize (GObject *object)
 
   if (model->bookmarks_file != NULL)
     g_object_unref (model->bookmarks_file);
+
+  /* detach from the favorites file monitor */
+  if (model->favorites_monitor != NULL)
+    {
+      g_file_monitor_cancel (model->favorites_monitor);
+      g_object_unref (model->favorites_monitor);
+    }
+
+  if (model->favorites_file != NULL)
+    g_object_unref (model->favorites_file);
 
   /* unlink from the device monitor */
   g_signal_handlers_disconnect_by_data (model->device_monitor, model);
@@ -1160,6 +1202,9 @@ thunar_shortcuts_model_shortcut_places (ThunarShortcutsModel *model)
     }
   g_object_unref (desktop);
   g_object_unref (home);
+
+  /* add favorites entry right after desktop */
+  thunar_shortcuts_model_shortcut_favorites (model);
 
   /* append the trash icon if the trash is supported */
   if (thunar_g_vfs_is_uri_scheme_supported ("trash"))
@@ -2516,4 +2561,395 @@ thunar_shortcuts_model_reload (ThunarShortcutsModel *model)
     }
 
   thunar_shortcuts_model_reload_bookmarks (model);
+}
+
+
+
+/* Favorites implementation */
+
+static void
+thunar_shortcuts_model_shortcut_favorites (ThunarShortcutsModel *model)
+{
+  ThunarShortcut *shortcut;
+
+  /* determine the URI to the favorites file */
+  model->favorites_file = thunar_g_file_new_for_favorites_file ();
+
+  /* register with the alteration monitor for the favorites file */
+  model->favorites_monitor = g_file_monitor_file (model->favorites_file, G_FILE_MONITOR_NONE, NULL, NULL);
+  if (G_LIKELY (model->favorites_monitor != NULL))
+    {
+      g_signal_connect (model->favorites_monitor, "changed",
+                        G_CALLBACK (thunar_shortcuts_model_monitor_favorites_file), model);
+    }
+
+  /* read the favorites file */
+  if (model->favorites_idle_id == 0)
+    model->favorites_idle_id = g_idle_add_full (G_PRIORITY_DEFAULT, thunar_shortcuts_model_load_favorites, model, NULL);
+
+  /* Add "Favorites" entry to sidebar - this is the virtual folder entry */
+  shortcut = g_slice_new0 (ThunarShortcut);
+  shortcut->group = THUNAR_SHORTCUT_GROUP_PLACES_FAVORITES;
+  shortcut->name = g_strdup (_("Favorites"));
+  shortcut->tooltip = g_strdup (_("Browse your favorite files and folders"));
+  shortcut->location = thunar_g_file_new_for_favorites ();
+  shortcut->gicon = g_themed_icon_new ("starred");
+  shortcut->hidden = thunar_shortcuts_model_get_hidden (model, shortcut);
+  shortcut->sort_id = -1; /* Show before bookmarks */
+  thunar_shortcuts_model_add_shortcut (model, shortcut);
+}
+
+
+
+static void
+thunar_shortcuts_model_load_favorite_line (GFile       *file_path,
+                                           const gchar *name,
+                                           gint         row_num,
+                                           gpointer     user_data)
+{
+  ThunarShortcutsModel *model = THUNAR_SHORTCUTS_MODEL (user_data);
+
+  _thunar_return_if_fail (G_IS_FILE (file_path));
+  _thunar_return_if_fail (THUNAR_IS_SHORTCUTS_MODEL (model));
+  _thunar_return_if_fail (name == NULL || g_utf8_validate (name, -1, NULL));
+
+  /* We don't add favorites to the sidebar as individual items,
+   * they are shown in the virtual favorites:/// folder.
+   * Just validate that the file is properly stored. */
+}
+
+
+
+static gboolean
+thunar_shortcuts_model_load_favorites (gpointer data)
+{
+  ThunarShortcutsModel *model = THUNAR_SHORTCUTS_MODEL (data);
+
+  _thunar_return_val_if_fail (THUNAR_IS_SHORTCUTS_MODEL (model), FALSE);
+
+  /* parse the favorites - just verify the file exists and is readable */
+  thunar_util_load_bookmarks (model->favorites_file,
+                              thunar_shortcuts_model_load_favorite_line,
+                              model);
+
+  /* update the visibility */
+  thunar_shortcuts_model_header_visibility (model);
+
+  model->favorites_idle_id = 0;
+
+  return FALSE;
+}
+
+
+
+static gboolean
+thunar_shortcuts_model_reload_favorites (gpointer data)
+{
+  ThunarShortcutsModel *model = THUNAR_SHORTCUTS_MODEL (data);
+
+  _thunar_return_val_if_fail (THUNAR_IS_SHORTCUTS_MODEL (model), FALSE);
+
+  /* reload the favorites file */
+  thunar_shortcuts_model_load_favorites (model);
+
+  /* reset the idle ID */
+  model->favorites_idle_id = 0;
+
+  return FALSE;
+}
+
+
+
+static void
+thunar_shortcuts_model_monitor_favorites_file (GFileMonitor     *monitor,
+                                               GFile            *file,
+                                               GFile            *other_file,
+                                               GFileMonitorEvent event_type,
+                                               gpointer          user_data)
+{
+  ThunarShortcutsModel *model = THUNAR_SHORTCUTS_MODEL (user_data);
+
+  _thunar_return_if_fail (THUNAR_IS_SHORTCUTS_MODEL (model));
+  _thunar_return_if_fail (model->favorites_monitor == monitor);
+
+  /* leave if we saved less than 2 seconds ago */
+  if (model->favorites_time + 2 * G_USEC_PER_SEC > g_get_real_time ())
+    return;
+
+  /* reload the favorites when idle */
+  if (model->favorites_idle_id == 0)
+    model->favorites_idle_id = g_idle_add (thunar_shortcuts_model_reload_favorites, model);
+}
+
+
+
+static void
+thunar_shortcuts_model_save_favorites (ThunarShortcutsModel *model)
+{
+  GString        *contents;
+  gchar          *favorites_path;
+  gchar          *uri;
+  GError         *err = NULL;
+  GFile          *parent = NULL;
+  GList          *favorites;
+  GList          *lp;
+
+  _thunar_return_if_fail (THUNAR_IS_SHORTCUTS_MODEL (model));
+
+  contents = g_string_new (NULL);
+
+  /* Get all favorites from our internal list */
+  favorites = thunar_shortcuts_model_get_favorites (model);
+
+  for (lp = favorites; lp != NULL; lp = lp->next)
+    {
+      GFile *fav_file = G_FILE (lp->data);
+      uri = g_file_get_uri (fav_file);
+      g_string_append_printf (contents, "%s\n", uri);
+      g_free (uri);
+    }
+
+  g_list_free_full (favorites, g_object_unref);
+
+  /* create folder if it does not exist */
+  parent = g_file_get_parent (model->favorites_file);
+  if (!g_file_make_directory_with_parents (parent, NULL, &err))
+    {
+      if (g_error_matches (err, G_IO_ERROR, G_IO_ERROR_EXISTS))
+        {
+          g_clear_error (&err);
+        }
+      else
+        {
+          g_warning ("Failed to create favorites folder: %s", err->message);
+          g_error_free (err);
+        }
+    }
+  g_clear_object (&parent);
+
+  /* write data to the disk */
+  favorites_path = g_file_get_path (model->favorites_file);
+  if (!g_file_set_contents (favorites_path, contents->str, contents->len, &err))
+    {
+      g_warning ("Failed to write \"%s\": %s", favorites_path, err->message);
+      g_error_free (err);
+    }
+  g_free (favorites_path);
+  g_string_free (contents, TRUE);
+
+  /* store the save time */
+  model->favorites_time = g_get_real_time ();
+}
+
+
+
+/**
+ * thunar_shortcuts_model_has_favorite:
+ * @model : a #ThunarShortcutsModel.
+ * @file  : a #GFile.
+ *
+ * Checks if @file is already in the favorites list.
+ *
+ * Return value: %TRUE if @file is in favorites, %FALSE otherwise.
+ **/
+gboolean
+thunar_shortcuts_model_has_favorite (ThunarShortcutsModel *model,
+                                     GFile                *file)
+{
+  GList    *favorites;
+  GList    *lp;
+  gboolean  found = FALSE;
+
+  _thunar_return_val_if_fail (THUNAR_IS_SHORTCUTS_MODEL (model), FALSE);
+  _thunar_return_val_if_fail (G_IS_FILE (file), FALSE);
+
+  /* Load favorites from file */
+  favorites = thunar_shortcuts_model_get_favorites (model);
+
+  for (lp = favorites; lp != NULL && !found; lp = lp->next)
+    {
+      found = g_file_equal (G_FILE (lp->data), file);
+    }
+
+  g_list_free_full (favorites, g_object_unref);
+
+  return found;
+}
+
+
+
+/**
+ * thunar_shortcuts_model_add_favorite:
+ * @model : a #ThunarShortcutsModel.
+ * @file  : the file to add (can be #ThunarFile or #GFile).
+ *
+ * Adds @file to the favorites list.
+ **/
+void
+thunar_shortcuts_model_add_favorite (ThunarShortcutsModel *model,
+                                     gpointer              file)
+{
+  GFile   *location;
+  GList   *favorites;
+  gchar   *uri;
+
+  _thunar_return_if_fail (THUNAR_IS_SHORTCUTS_MODEL (model));
+  _thunar_return_if_fail (THUNAR_IS_FILE (file) || G_IS_FILE (file));
+
+  location = G_IS_FILE (file) ? G_FILE (file) : thunar_file_get_file (THUNAR_FILE (file));
+
+  /* Check if already in favorites */
+  if (thunar_shortcuts_model_has_favorite (model, location))
+    return;
+
+  /* Load existing favorites, add new one, and save */
+  favorites = thunar_shortcuts_model_get_favorites (model);
+  favorites = g_list_append (favorites, g_object_ref (location));
+
+  /* Save to file */
+  GString *contents = g_string_new (NULL);
+  for (GList *lp = favorites; lp != NULL; lp = lp->next)
+    {
+      uri = g_file_get_uri (G_FILE (lp->data));
+      g_string_append_printf (contents, "%s\n", uri);
+      g_free (uri);
+    }
+
+  g_list_free_full (favorites, g_object_unref);
+
+  /* create folder if it does not exist */
+  GFile *parent = g_file_get_parent (model->favorites_file);
+  GError *err = NULL;
+  if (!g_file_make_directory_with_parents (parent, NULL, &err))
+    {
+      if (!g_error_matches (err, G_IO_ERROR, G_IO_ERROR_EXISTS))
+        {
+          g_warning ("Failed to create favorites folder: %s", err->message);
+        }
+      g_clear_error (&err);
+    }
+  g_clear_object (&parent);
+
+  /* write data to the disk */
+  gchar *favorites_path = g_file_get_path (model->favorites_file);
+  if (!g_file_set_contents (favorites_path, contents->str, contents->len, &err))
+    {
+      g_warning ("Failed to write \"%s\": %s", favorites_path, err->message);
+      g_error_free (err);
+    }
+  g_free (favorites_path);
+  g_string_free (contents, TRUE);
+
+  /* store the save time */
+  model->favorites_time = g_get_real_time ();
+}
+
+
+
+/**
+ * thunar_shortcuts_model_remove_favorite:
+ * @model : a #ThunarShortcutsModel.
+ * @file  : the #GFile to remove.
+ *
+ * Removes @file from the favorites list.
+ **/
+void
+thunar_shortcuts_model_remove_favorite (ThunarShortcutsModel *model,
+                                        GFile                *file)
+{
+  GList   *favorites;
+  GList   *lp;
+  gchar   *uri;
+
+  _thunar_return_if_fail (THUNAR_IS_SHORTCUTS_MODEL (model));
+  _thunar_return_if_fail (G_IS_FILE (file));
+
+  /* Load favorites and remove the matching one */
+  favorites = thunar_shortcuts_model_get_favorites (model);
+
+  for (lp = favorites; lp != NULL; lp = lp->next)
+    {
+      if (g_file_equal (G_FILE (lp->data), file))
+        {
+          g_object_unref (lp->data);
+          favorites = g_list_delete_link (favorites, lp);
+          break;
+        }
+    }
+
+  /* Save to file */
+  GString *contents = g_string_new (NULL);
+  for (lp = favorites; lp != NULL; lp = lp->next)
+    {
+      uri = g_file_get_uri (G_FILE (lp->data));
+      g_string_append_printf (contents, "%s\n", uri);
+      g_free (uri);
+    }
+
+  g_list_free_full (favorites, g_object_unref);
+
+  /* write data to the disk */
+  gchar *favorites_path = g_file_get_path (model->favorites_file);
+  GError *err = NULL;
+  if (!g_file_set_contents (favorites_path, contents->str, contents->len, &err))
+    {
+      g_warning ("Failed to write \"%s\": %s", favorites_path, err->message);
+      g_error_free (err);
+    }
+  g_free (favorites_path);
+  g_string_free (contents, TRUE);
+
+  /* store the save time */
+  model->favorites_time = g_get_real_time ();
+}
+
+
+
+/**
+ * thunar_shortcuts_model_get_favorites:
+ * @model : a #ThunarShortcutsModel.
+ *
+ * Returns a list of all favorite files.
+ *
+ * Return value: (transfer full) (element-type GFile): a list of #GFile objects.
+ *               Free with g_list_free_full (list, g_object_unref).
+ **/
+GList *
+thunar_shortcuts_model_get_favorites (ThunarShortcutsModel *model)
+{
+  GList   *favorites = NULL;
+  gchar   *contents = NULL;
+  gsize    length;
+  GError  *err = NULL;
+  gchar  **lines;
+  guint    n;
+
+  _thunar_return_val_if_fail (THUNAR_IS_SHORTCUTS_MODEL (model), NULL);
+
+  /* Try to load the favorites file */
+  gchar *favorites_path = g_file_get_path (model->favorites_file);
+  if (g_file_get_contents (favorites_path, &contents, &length, &err))
+    {
+      lines = g_strsplit (contents, "\n", -1);
+      for (n = 0; lines[n] != NULL; n++)
+        {
+          gchar *line = g_strstrip (lines[n]);
+          if (*line != '\0' && *line != '#')
+            {
+              GFile *file = g_file_new_for_uri (line);
+              favorites = g_list_append (favorites, file);
+            }
+        }
+      g_strfreev (lines);
+      g_free (contents);
+    }
+  else
+    {
+      /* File doesn't exist yet, that's OK */
+      g_clear_error (&err);
+    }
+
+  g_free (favorites_path);
+
+  return favorites;
 }

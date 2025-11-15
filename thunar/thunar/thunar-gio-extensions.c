@@ -58,6 +58,7 @@
 #include "thunar/thunar-gio-extensions.h"
 #include "thunar/thunar-preferences.h"
 #include "thunar/thunar-private.h"
+#include "thunar/thunar-shortcuts-model.h"
 #include "thunar/thunar-util.h"
 
 #include <libxfce4util/libxfce4util.h>
@@ -186,6 +187,29 @@ thunar_g_file_new_for_bookmarks (void)
   g_free (filename);
 
   return bookmarks;
+}
+
+
+
+GFile *
+thunar_g_file_new_for_favorites (void)
+{
+  return g_file_new_for_uri ("favorites:///");
+}
+
+
+
+GFile *
+thunar_g_file_new_for_favorites_file (void)
+{
+  gchar *filename;
+  GFile *favorites;
+
+  filename = g_build_filename (g_get_user_config_dir (), "thunar", "favorites", NULL);
+  favorites = g_file_new_for_path (filename);
+  g_free (filename);
+
+  return favorites;
 }
 
 
@@ -344,6 +368,40 @@ thunar_g_file_is_network (GFile *file)
   g_free (uri);
 
   return is_network;
+}
+
+
+
+gboolean
+thunar_g_file_is_favorites (GFile *file)
+{
+  char    *uri;
+  gboolean is_favorites = FALSE;
+
+  _thunar_return_val_if_fail (G_IS_FILE (file), FALSE);
+
+  uri = g_file_get_uri (file);
+  is_favorites = g_strcmp0 (uri, "favorites:///") == 0;
+  g_free (uri);
+
+  return is_favorites;
+}
+
+
+
+gboolean
+thunar_g_file_is_in_favorites (GFile *file)
+{
+  ThunarShortcutsModel *model;
+  gboolean              result;
+
+  _thunar_return_val_if_fail (G_IS_FILE (file), FALSE);
+
+  model = thunar_shortcuts_model_get_default ();
+  result = thunar_shortcuts_model_has_favorite (model, file);
+  g_object_unref (model);
+
+  return result;
 }
 
 

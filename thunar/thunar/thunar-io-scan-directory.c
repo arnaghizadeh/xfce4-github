@@ -22,6 +22,7 @@
 #include "thunar/thunar-io-scan-directory.h"
 #include "thunar/thunar-job.h"
 #include "thunar/thunar-private.h"
+#include "thunar/thunar-shortcuts-model.h"
 
 #include <gio/gio.h>
 
@@ -70,6 +71,46 @@ thunar_io_scan_directory (ThunarJob          *job,
   /* abort if the job was cancelled */
   if (job != NULL && thunar_job_set_error_if_cancelled (THUNAR_JOB (job), error))
     return NULL;
+
+  /* Handle favorites:/// virtual directory */
+  if (thunar_g_file_is_favorites (file))
+    {
+      ThunarShortcutsModel *model;
+      GList                *favorites;
+      GList                *lp;
+      GList                *files = NULL;
+
+      model = thunar_shortcuts_model_get_default ();
+      favorites = thunar_shortcuts_model_get_favorites (model);
+
+      for (lp = favorites; lp != NULL; lp = lp->next)
+        {
+          GFile *fav_file = G_FILE (lp->data);
+
+          /* abort if the job was cancelled */
+          if (job != NULL && thunar_job_is_cancelled (THUNAR_JOB (job)))
+            break;
+
+          if (return_thunar_files)
+            {
+              ThunarFile *thunar_file = thunar_file_get (fav_file, NULL);
+              if (thunar_file != NULL)
+                {
+                  files = thunar_g_list_prepend_deep (files, thunar_file);
+                  g_object_unref (thunar_file);
+                }
+            }
+          else
+            {
+              files = thunar_g_list_prepend_deep (files, fav_file);
+            }
+        }
+
+      g_list_free_full (favorites, g_object_unref);
+      g_object_unref (model);
+
+      return files;
+    }
 
   /* don't recurse when we are scanning prior to unlinking and the current
    * file/dir is in the trash. In GVfs, only the top-level directories in

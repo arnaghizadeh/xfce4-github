@@ -331,6 +331,14 @@ thunar_menu_add_sections (ThunarMenu        *menu,
       if (thunar_action_manager_append_menu_item (menu->action_mgr, GTK_MENU_SHELL (menu), THUNAR_ACTION_MANAGER_ACTION_REMOVE_FROM_RECENT, FALSE) != NULL)
         xfce_gtk_menu_append_separator (GTK_MENU_SHELL (menu));
     }
+  if (menu_sections & THUNAR_MENU_SECTION_FAVORITES)
+    {
+      item_added = FALSE;
+      item_added |= (thunar_action_manager_append_menu_item (menu->action_mgr, GTK_MENU_SHELL (menu), THUNAR_ACTION_MANAGER_ACTION_ADD_TO_FAVORITES, FALSE) != NULL);
+      item_added |= (thunar_action_manager_append_menu_item (menu->action_mgr, GTK_MENU_SHELL (menu), THUNAR_ACTION_MANAGER_ACTION_REMOVE_FROM_FAVORITES, FALSE) != NULL);
+      if (item_added)
+        xfce_gtk_menu_append_separator (GTK_MENU_SHELL (menu));
+    }
 
   if (menu_sections & THUNAR_MENU_SECTION_CUSTOM_ACTIONS)
     {

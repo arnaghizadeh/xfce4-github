@@ -1109,6 +1109,8 @@ thunar_file_info_reload (ThunarFile   *file,
     {
       if (G_UNLIKELY (thunar_file_is_trash (file)))
         file->display_name = g_strdup (_("Trash"));
+      else if (G_UNLIKELY (thunar_file_is_favorites (file)))
+        file->display_name = g_strdup (_("Favorites"));
       else if (G_LIKELY (file->info != NULL))
         {
           display_name = g_file_info_get_display_name (file->info);
@@ -1240,6 +1242,35 @@ thunar_file_load (ThunarFile   *file,
 
   /* remove the file from cache */
   g_hash_table_remove (file_cache, file->gfile);
+
+  /* Handle virtual favorites:/// folder specially */
+  if (thunar_g_file_is_favorites (file->gfile))
+    {
+      /* Create a synthetic file info for the favorites folder */
+      info = g_file_info_new ();
+      g_file_info_set_file_type (info, G_FILE_TYPE_DIRECTORY);
+      g_file_info_set_display_name (info, _("Favorites"));
+      g_file_info_set_name (info, "favorites");
+      g_file_info_set_content_type (info, "inode/directory");
+      g_file_info_set_attribute_boolean (info, G_FILE_ATTRIBUTE_ACCESS_CAN_READ, TRUE);
+      g_file_info_set_attribute_boolean (info, G_FILE_ATTRIBUTE_ACCESS_CAN_WRITE, FALSE);
+      g_file_info_set_attribute_boolean (info, G_FILE_ATTRIBUTE_ACCESS_CAN_DELETE, FALSE);
+      g_file_info_set_attribute_boolean (info, G_FILE_ATTRIBUTE_ACCESS_CAN_EXECUTE, TRUE);
+      g_file_info_set_attribute_boolean (info, G_FILE_ATTRIBUTE_ACCESS_CAN_TRASH, FALSE);
+      g_file_info_set_attribute_boolean (info, G_FILE_ATTRIBUTE_ACCESS_CAN_RENAME, FALSE);
+
+      /* reset the file */
+      thunar_file_info_clear (file);
+      file->info = info;
+      thunar_file_info_reload (file, cancellable);
+
+      /* (re)insert the file into the cache */
+      g_hash_table_insert (file_cache,
+                           g_object_ref (file->gfile),
+                           weak_ref_new (G_OBJECT (file)));
+      G_REC_UNLOCK (file_cache_mutex);
+      return TRUE;
+    }
 
   /* query a new file info */
   info = g_file_query_info (file->gfile,
@@ -3403,6 +3434,24 @@ thunar_file_is_in_recent (const ThunarFile *file)
 
 
 
+gboolean
+thunar_file_is_favorites (const ThunarFile *file)
+{
+  _thunar_return_val_if_fail (THUNAR_IS_FILE (file), FALSE);
+  return thunar_g_file_is_favorites (file->gfile);
+}
+
+
+
+gboolean
+thunar_file_is_in_favorites (const ThunarFile *file)
+{
+  _thunar_return_val_if_fail (THUNAR_IS_FILE (file), FALSE);
+  return thunar_g_file_is_in_favorites (file->gfile);
+}
+
+
+
 /**
  * thunar_file_add_to_recent:
  * @file : a #ThunarFile instance.
@@ -3814,6 +3863,10 @@ thunar_file_get_emblem_names (ThunarFile *file)
   if (thunar_file_is_symlink (file))
     emblems = g_list_prepend (emblems, g_strdup (THUNAR_FILE_EMBLEM_NAME_SYMBOLIC_LINK));
 
+  /* add starred emblem for files in favorites */
+  if (thunar_file_is_in_favorites (file))
+    emblems = g_list_prepend (emblems, g_strdup ("emblem-favorite"));
+
   /* determine the user ID of the file owner */
   /* TODO what are we going to do here on non-UNIX systems? */
   uid = file->info != NULL
@@ -4218,6 +4271,10 @@ thunar_file_get_icon_name (ThunarFile         *file,
           else if (g_file_has_uri_scheme (file->gfile, "recent"))
             {
               special_names[0] = "document-open-recent";
+            }
+          else if (g_file_has_uri_scheme (file->gfile, "favorites"))
+            {
+              special_names[0] = "starred";
             }
           else if (g_file_has_uri_scheme (file->gfile, "computer"))
             {

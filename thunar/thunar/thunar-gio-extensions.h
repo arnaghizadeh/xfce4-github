@@ -49,6 +49,10 @@ GFile *
 thunar_g_file_new_for_network (void);
 GFile *
 thunar_g_file_new_for_bookmarks (void);
+GFile *
+thunar_g_file_new_for_favorites (void);
+GFile *
+thunar_g_file_new_for_favorites_file (void);
 
 GFile *
 thunar_g_file_resolve_symlink (GFile *file);
@@ -69,6 +73,10 @@ gboolean
 thunar_g_file_is_computer (GFile *file);
 gboolean
 thunar_g_file_is_network (GFile *file);
+gboolean
+thunar_g_file_is_favorites (GFile *file);
+gboolean
+thunar_g_file_is_in_favorites (GFile *file);
 
 GKeyFile *
 thunar_g_file_query_key_file (GFile        *file,

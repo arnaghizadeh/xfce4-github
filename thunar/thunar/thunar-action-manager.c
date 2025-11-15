@@ -48,6 +48,7 @@
 #include "thunar/thunar-properties-dialog.h"
 #include "thunar/thunar-renamer-dialog.h"
 #include "thunar/thunar-sendto-model.h"
+#include "thunar/thunar-shortcuts-model.h"
 #include "thunar/thunar-shortcuts-pane.h"
 #include "thunar/thunar-simple-job.h"
 #include "thunar/thunar-tree-view.h"
@@ -225,6 +226,10 @@ thunar_action_manager_action_trash_delete (ThunarActionManager *action_mgr);
 static gboolean
 thunar_action_manager_action_remove_from_recent (ThunarActionManager *action_mgr);
 static gboolean
+thunar_action_manager_action_add_to_favorites (ThunarActionManager *action_mgr);
+static gboolean
+thunar_action_manager_action_remove_from_favorites (ThunarActionManager *action_mgr);
+static gboolean
 thunar_action_manager_action_cut (ThunarActionManager *action_mgr);
 static gboolean
 thunar_action_manager_action_copy (ThunarActionManager *action_mgr);
@@ -371,6 +376,8 @@ static XfceGtkActionEntry thunar_action_manager_action_entries[] =
     { THUNAR_ACTION_MANAGER_ACTION_EJECT,              NULL,                                               "",                  XFCE_GTK_MENU_ITEM,       N_ ("_Eject"),                          N_ ("Eject the selected device"),                                                                            NULL,                  G_CALLBACK (thunar_action_manager_action_eject),               },
     { THUNAR_ACTION_MANAGER_ACTION_COMPRESS,           "<Actions>/ThunarActionManager/compress",           "",                  XFCE_GTK_IMAGE_MENU_ITEM, N_ ("Co_mpress..."),                    N_ ("Create an archive from the selected files"),                                                            "package-x-generic",   G_CALLBACK (thunar_action_manager_action_compress),            },
     { THUNAR_ACTION_MANAGER_ACTION_EXTRACT_HERE,       "<Actions>/ThunarActionManager/extract-here",       "",                  XFCE_GTK_IMAGE_MENU_ITEM, N_ ("E_xtract Here"),                   N_ ("Extract the selected archive to the current folder"),                                                   "package-x-generic",   G_CALLBACK (thunar_action_manager_action_extract_here),        },
+    { THUNAR_ACTION_MANAGER_ACTION_ADD_TO_FAVORITES,      "<Actions>/ThunarActionManager/add-to-favorites",      "",                  XFCE_GTK_IMAGE_MENU_ITEM, N_ ("Add to _Favorites"),               N_ ("Add the selected files to Favorites"),                                                                  "starred",             G_CALLBACK (thunar_action_manager_action_add_to_favorites),    },
+    { THUNAR_ACTION_MANAGER_ACTION_REMOVE_FROM_FAVORITES, "<Actions>/ThunarActionManager/remove-from-favorites", "",                  XFCE_GTK_IMAGE_MENU_ITEM, N_ ("Remove from Fa_vorites"),          N_ ("Remove the selected files from Favorites"),                                                             "non-starred",         G_CALLBACK (thunar_action_manager_action_remove_from_favorites),},
 };
 /* clang-format on */
 
@@ -2017,6 +2024,75 @@ thunar_action_manager_append_menu_item (ThunarActionManager      *action_mgr,
 
         tooltip_text = ngettext ("Extract the selected archive to the current folder",
                                  "Extract the selected archives to the current folder", action_mgr->n_files_to_process);
+        item = xfce_gtk_image_menu_item_new_from_icon_name (action_entry->menu_item_label_text, tooltip_text,
+                                                             action_entry->accel_path, action_entry->callback,
+                                                             G_OBJECT (action_mgr), action_entry->menu_item_icon_name, menu);
+        return item;
+      }
+
+    case THUNAR_ACTION_MANAGER_ACTION_ADD_TO_FAVORITES:
+      {
+        /* Only show if files are selected and not already all in favorites */
+        if (!action_mgr->files_are_selected)
+          return NULL;
+
+        /* Check if any file is not in favorites (if all are in favorites, don't show "Add") */
+        ThunarShortcutsModel *model = thunar_shortcuts_model_get_default ();
+        gboolean has_non_favorite = FALSE;
+        GList *lp;
+        for (lp = action_mgr->files_to_process; lp != NULL; lp = lp->next)
+          {
+            GFile *gfile = thunar_file_get_file (THUNAR_FILE (lp->data));
+            if (!thunar_shortcuts_model_has_favorite (model, gfile))
+              {
+                has_non_favorite = TRUE;
+                break;
+              }
+          }
+        g_object_unref (model);
+
+        if (!has_non_favorite)
+          return NULL;
+
+        tooltip_text = ngettext ("Add the selected file to Favorites",
+                                 "Add the selected files to Favorites", action_mgr->n_files_to_process);
+        item = xfce_gtk_image_menu_item_new_from_icon_name (action_entry->menu_item_label_text, tooltip_text,
+                                                             action_entry->accel_path, action_entry->callback,
+                                                             G_OBJECT (action_mgr), action_entry->menu_item_icon_name, menu);
+        return item;
+      }
+
+    case THUNAR_ACTION_MANAGER_ACTION_REMOVE_FROM_FAVORITES:
+      {
+        /* Only show when viewing favorites folder OR when any selected file is in favorites */
+        if (!action_mgr->files_are_selected)
+          return NULL;
+
+        /* Check if we're in the favorites folder or if any file is in favorites */
+        gboolean in_favorites_view = thunar_file_is_favorites (action_mgr->current_directory);
+        gboolean has_favorite = FALSE;
+
+        if (!in_favorites_view)
+          {
+            ThunarShortcutsModel *model = thunar_shortcuts_model_get_default ();
+            GList *lp;
+            for (lp = action_mgr->files_to_process; lp != NULL; lp = lp->next)
+              {
+                GFile *gfile = thunar_file_get_file (THUNAR_FILE (lp->data));
+                if (thunar_shortcuts_model_has_favorite (model, gfile))
+                  {
+                    has_favorite = TRUE;
+                    break;
+                  }
+              }
+            g_object_unref (model);
+
+            if (!has_favorite)
+              return NULL;
+          }
+
+        tooltip_text = ngettext ("Remove the selected file from Favorites",
+                                 "Remove the selected files from Favorites", action_mgr->n_files_to_process);
         item = xfce_gtk_image_menu_item_new_from_icon_name (action_entry->menu_item_label_text, tooltip_text,
                                                              action_entry->accel_path, action_entry->callback,
                                                              G_OBJECT (action_mgr), action_entry->menu_item_icon_name, menu);
@@ -3770,6 +3846,77 @@ thunar_action_manager_action_extract_here (ThunarActionManager *action_mgr)
       g_object_unref (job);
       g_object_unref (target_dir);
     }
+
+  return TRUE;
+}
+
+
+
+/**
+ * thunar_action_manager_action_add_to_favorites:
+ * @action_mgr : a #ThunarActionManager instance
+ *
+ * Adds the selected files to Favorites.
+ *
+ * Return value: TRUE if the action was handled.
+ **/
+static gboolean
+thunar_action_manager_action_add_to_favorites (ThunarActionManager *action_mgr)
+{
+  GList                *lp;
+  ThunarShortcutsModel *model;
+
+  _thunar_return_val_if_fail (THUNAR_IS_ACTION_MANAGER (action_mgr), FALSE);
+
+  /* Get the shortcuts model */
+  model = thunar_shortcuts_model_get_default ();
+
+  /* Add each selected file to favorites */
+  for (lp = action_mgr->files_to_process; lp != NULL; lp = lp->next)
+    {
+      ThunarFile *file = THUNAR_FILE (lp->data);
+      thunar_shortcuts_model_add_favorite (model, file);
+      /* Notify that the file changed so emblem gets updated */
+      thunar_file_changed (file);
+    }
+
+  g_object_unref (model);
+
+  return TRUE;
+}
+
+
+
+/**
+ * thunar_action_manager_action_remove_from_favorites:
+ * @action_mgr : a #ThunarActionManager instance
+ *
+ * Removes the selected files from Favorites.
+ *
+ * Return value: TRUE if the action was handled.
+ **/
+static gboolean
+thunar_action_manager_action_remove_from_favorites (ThunarActionManager *action_mgr)
+{
+  GList                *lp;
+  ThunarShortcutsModel *model;
+
+  _thunar_return_val_if_fail (THUNAR_IS_ACTION_MANAGER (action_mgr), FALSE);
+
+  /* Get the shortcuts model */
+  model = thunar_shortcuts_model_get_default ();
+
+  /* Remove each selected file from favorites */
+  for (lp = action_mgr->files_to_process; lp != NULL; lp = lp->next)
+    {
+      ThunarFile *file = THUNAR_FILE (lp->data);
+      GFile *gfile = thunar_file_get_file (file);
+      thunar_shortcuts_model_remove_favorite (model, gfile);
+      /* Notify that the file changed so emblem gets updated */
+      thunar_file_changed (file);
+    }
+
+  g_object_unref (model);
 
   return TRUE;
 }

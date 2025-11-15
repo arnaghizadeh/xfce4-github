@@ -296,6 +296,10 @@ gboolean
 thunar_file_is_recent (const ThunarFile *file);
 gboolean
 thunar_file_is_in_recent (const ThunarFile *file);
+gboolean
+thunar_file_is_favorites (const ThunarFile *file);
+gboolean
+thunar_file_is_in_favorites (const ThunarFile *file);
 void
 thunar_file_add_to_recent (const ThunarFile *file);
 gboolean
