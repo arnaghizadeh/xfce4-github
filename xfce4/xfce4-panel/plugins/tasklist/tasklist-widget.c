@@ -177,6 +177,9 @@ struct _XfceTasklist
   /* applications of all the windows in the taskbar */
   GHashTable *apps;
 
+  /* applications that have been manually broken (ungrouped) */
+  GHashTable *broken_apps;
+
   /* normal or iconbox style */
   guint show_labels : 1;
 
@@ -464,6 +467,10 @@ xfce_tasklist_group_button_new (XfwApplication *app,
 static void
 xfce_tasklist_group_button_child_destroyed (XfceTasklistChild *group_child,
                                             GtkWidget *child_button);
+static void
+xfce_tasklist_group_button_child_visible_changed (XfceTasklistChild *group_child);
+static void
+xfce_tasklist_window_button_menu_regroup (XfceTasklistChild *window_child);
 
 /* recent files functions */
 static GList *
@@ -1729,6 +1736,9 @@ xfce_tasklist_connect_screen (XfceTasklist *tasklist)
     tasklist->apps = g_hash_table_new_full (g_direct_hash, g_direct_equal,
                                             NULL, (GDestroyNotify) xfce_tasklist_group_button_remove);
 
+  /* initialize broken apps hash table - tracks manually ungrouped applications */
+  tasklist->broken_apps = g_hash_table_new (g_direct_hash, g_direct_equal);
+
   /* set the display and screen */
   tasklist->display = gtk_widget_get_display (GTK_WIDGET (tasklist));
   tasklist->screen = xfw_screen_get_default ();
@@ -1798,6 +1808,13 @@ xfce_tasklist_disconnect_screen (XfceTasklist *tasklist)
     {
       g_hash_table_destroy (tasklist->apps);
       tasklist->apps = NULL;
+    }
+
+  /* clear the broken apps tracking */
+  if (tasklist->broken_apps != NULL)
+    {
+      g_hash_table_destroy (tasklist->broken_apps);
+      tasklist->broken_apps = NULL;
     }
 
   /* disconnect from all skipped windows */
@@ -3353,6 +3370,27 @@ xfce_tasklist_button_button_press_event (GtkWidget *button,
           gtk_widget_show (recent_item);
         }
 
+      /* Add "Regroup" menu item if window is from a broken (ungrouped) app */
+      if (child->tasklist->grouping
+          && child->tasklist->broken_apps != NULL
+          && child->app != NULL
+          && g_hash_table_contains (child->tasklist->broken_apps, child->app))
+        {
+          GtkWidget *sep, *regroup_item, *image;
+
+          sep = gtk_separator_menu_item_new ();
+          gtk_menu_shell_append (GTK_MENU_SHELL (menu), sep);
+          gtk_widget_show (sep);
+
+          image = gtk_image_new_from_icon_name ("view-grid-symbolic", GTK_ICON_SIZE_MENU);
+          regroup_item = panel_image_menu_item_new_with_mnemonic (_("_Regroup"));
+          panel_image_menu_item_set_image (regroup_item, image);
+          gtk_menu_shell_append (GTK_MENU_SHELL (menu), regroup_item);
+          g_signal_connect_swapped (G_OBJECT (regroup_item), "activate",
+                                    G_CALLBACK (xfce_tasklist_window_button_menu_regroup), child);
+          gtk_widget_show_all (regroup_item);
+        }
+
       g_signal_connect (G_OBJECT (menu), "deactivate",
                         G_CALLBACK (xfce_tasklist_button_menu_destroy), child);
 
@@ -3990,6 +4028,68 @@ xfce_tasklist_group_button_menu_close (GtkWidget *menuitem,
 
 
 
+static void
+xfce_tasklist_group_button_menu_break (XfceTasklistChild *group_child)
+{
+  panel_return_if_fail (XFW_IS_APPLICATION (group_child->app));
+  panel_return_if_fail (XFCE_IS_TASKLIST (group_child->tasklist));
+
+  if (group_child->tasklist->broken_apps == NULL)
+    return;
+
+  /* add this app to the broken apps set */
+  g_hash_table_add (group_child->tasklist->broken_apps, group_child->app);
+
+  /* trigger visibility update to ungroup */
+  xfce_tasklist_group_button_child_visible_changed (group_child);
+}
+
+
+
+static void
+xfce_tasklist_group_button_menu_regroup (XfceTasklistChild *group_child)
+{
+  panel_return_if_fail (XFW_IS_APPLICATION (group_child->app));
+  panel_return_if_fail (XFCE_IS_TASKLIST (group_child->tasklist));
+
+  if (group_child->tasklist->broken_apps == NULL)
+    return;
+
+  /* remove this app from the broken apps set */
+  g_hash_table_remove (group_child->tasklist->broken_apps, group_child->app);
+
+  /* trigger visibility update to regroup */
+  xfce_tasklist_group_button_child_visible_changed (group_child);
+}
+
+
+
+static void
+xfce_tasklist_window_button_menu_regroup (XfceTasklistChild *window_child)
+{
+  XfceTasklistChild *group_child;
+
+  panel_return_if_fail (XFW_IS_WINDOW (window_child->window));
+  panel_return_if_fail (XFW_IS_APPLICATION (window_child->app));
+  panel_return_if_fail (XFCE_IS_TASKLIST (window_child->tasklist));
+
+  if (window_child->tasklist->broken_apps == NULL)
+    return;
+
+  /* remove this app from the broken apps set */
+  g_hash_table_remove (window_child->tasklist->broken_apps, window_child->app);
+
+  /* find the group button for this app and trigger visibility update */
+  if (window_child->tasklist->apps != NULL)
+    {
+      group_child = g_hash_table_lookup (window_child->tasklist->apps, window_child->app);
+      if (group_child != NULL)
+        xfce_tasklist_group_button_child_visible_changed (group_child);
+    }
+}
+
+
+
 static GtkWidget *
 xfce_tasklist_group_button_menu (XfceTasklistChild *group_child,
                                  gboolean action_menu_entries)
@@ -4068,6 +4168,19 @@ xfce_tasklist_group_button_menu (XfceTasklistChild *group_child,
       gtk_menu_shell_append (GTK_MENU_SHELL (menu), mi);
       g_signal_connect_swapped (G_OBJECT (mi), "activate",
                                 G_CALLBACK (xfce_tasklist_group_button_menu_close_all), group_child);
+      gtk_widget_show_all (mi);
+
+      /* add Break menu item to ungroup windows */
+      mi = gtk_separator_menu_item_new ();
+      gtk_menu_shell_append (GTK_MENU_SHELL (menu), mi);
+      gtk_widget_show (mi);
+
+      image = gtk_image_new_from_icon_name ("view-list-symbolic", GTK_ICON_SIZE_MENU);
+      mi = panel_image_menu_item_new_with_mnemonic (_("_Break"));
+      panel_image_menu_item_set_image (mi, image);
+      gtk_menu_shell_append (GTK_MENU_SHELL (menu), mi);
+      g_signal_connect_swapped (G_OBJECT (mi), "activate",
+                                G_CALLBACK (xfce_tasklist_group_button_menu_break), group_child);
       gtk_widget_show_all (mi);
     }
 
@@ -4526,12 +4639,17 @@ xfce_tasklist_group_button_child_visible_changed (XfceTasklistChild *group_child
   GSList *li;
   gint visible_counter = 0;
   XfceTasklistChildType type;
+  gboolean is_broken;
 
   panel_return_if_fail (group_child->type == CHILD_TYPE_GROUP);
   panel_return_if_fail (XFW_IS_APPLICATION (group_child->app));
   panel_return_if_fail (XFCE_IS_TASKLIST (group_child->tasklist));
   panel_return_if_fail (group_child->tasklist->grouping);
   panel_return_if_fail (group_child->windows != NULL);
+
+  /* check if this app is in broken (manually ungrouped) state */
+  is_broken = group_child->tasklist->broken_apps != NULL
+              && g_hash_table_contains (group_child->tasklist->broken_apps, group_child->app);
 
   /* the group id is defined below as that of the last added window */
   group_child->unique_id = 0;
@@ -4546,18 +4664,8 @@ xfce_tasklist_group_button_child_visible_changed (XfceTasklistChild *group_child
         }
     }
 
-  if (visible_counter > 1)
-    {
-      if (group_child->tasklist->sort_order == XFCE_TASKLIST_SORT_ORDER_DND
-          && !gtk_widget_get_visible (group_child->button))
-        xfce_tasklist_group_button_keep_dnd_position (group_child, group_child->windows->data,
-                                                      group_child);
-
-      /* show the button and take the windows */
-      gtk_widget_show (group_child->button);
-      type = CHILD_TYPE_GROUP_MENU;
-    }
-  else
+  /* if broken, always show as individual windows regardless of count */
+  if (is_broken || visible_counter <= 1)
     {
       if (group_child->tasklist->sort_order == XFCE_TASKLIST_SORT_ORDER_DND
           && gtk_widget_get_visible (group_child->button))
@@ -4567,6 +4675,17 @@ xfce_tasklist_group_button_child_visible_changed (XfceTasklistChild *group_child
       /* hide the button and ungroup the buttons */
       gtk_widget_hide (group_child->button);
       type = CHILD_TYPE_WINDOW;
+    }
+  else
+    {
+      if (group_child->tasklist->sort_order == XFCE_TASKLIST_SORT_ORDER_DND
+          && !gtk_widget_get_visible (group_child->button))
+        xfce_tasklist_group_button_keep_dnd_position (group_child, group_child->windows->data,
+                                                      group_child);
+
+      /* show the button and take the windows */
+      gtk_widget_show (group_child->button);
+      type = CHILD_TYPE_GROUP_MENU;
     }
 
   for (li = group_child->windows; li != NULL; li = li->next)
@@ -4618,6 +4737,10 @@ xfce_tasklist_group_button_child_destroyed (XfceTasklistChild *group_child,
     }
   else
     {
+      /* also remove from broken apps if the last window closes */
+      if (group_child->tasklist->broken_apps != NULL)
+        g_hash_table_remove (group_child->tasklist->broken_apps, group_child->app);
+
       g_hash_table_remove (group_child->tasklist->apps, group_child->app);
     }
 }
