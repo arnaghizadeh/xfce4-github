@@ -2425,19 +2425,31 @@ xfce_tasklist_child_new (XfceTasklist *tasklist)
 
   child->box = gtk_box_new (!xfce_tasklist_vertical (tasklist) ? GTK_ORIENTATION_HORIZONTAL
                                                                : GTK_ORIENTATION_VERTICAL,
-                            6);
+                            0);
+  gtk_widget_set_halign (child->box, GTK_ALIGN_CENTER);
+  gtk_widget_set_valign (child->box, GTK_ALIGN_CENTER);
   gtk_container_add (GTK_CONTAINER (child->button), child->box);
   gtk_widget_show (child->box);
 
   provider = gtk_css_provider_new ();
   /* silly workaround for gtkcss only accepting "." as decimal separator and floats returning
      with "," as decimal separator in some locales */
-  css_string = g_strdup_printf ("image { padding: 3px; } image.minimized { opacity: %d.%02d; }",
-                                tasklist->minimized_icon_lucency / 100,
-                                tasklist->minimized_icon_lucency % 100);
+  if (tasklist->show_labels)
+    css_string = g_strdup_printf ("image { padding: 10px; } image.minimized { opacity: %d.%02d; }",
+                                  tasklist->minimized_icon_lucency / 100,
+                                  tasklist->minimized_icon_lucency % 100);
+  else
+    css_string = g_strdup_printf ("image { padding: 0px; margin-left: 5px; margin-right: 5px; } image.minimized { opacity: %d.%02d; }",
+                                  tasklist->minimized_icon_lucency / 100,
+                                  tasklist->minimized_icon_lucency % 100);
   gtk_css_provider_load_from_data (provider, css_string, -1, NULL);
   child->icon = gtk_image_new ();
   child->pixbuf = NULL;
+  if (!tasklist->show_labels)
+    {
+      gtk_widget_set_halign (child->icon, GTK_ALIGN_CENTER);
+      gtk_widget_set_valign (child->icon, GTK_ALIGN_CENTER);
+    }
   gtk_style_context_add_provider (gtk_widget_get_style_context (child->icon),
                                   GTK_STYLE_PROVIDER (provider),
                                   GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
@@ -2452,7 +2464,7 @@ xfce_tasklist_child_new (XfceTasklist *tasklist)
     gtk_widget_show (child->icon);
 
   child->label = gtk_label_new (NULL);
-  gtk_box_pack_start (GTK_BOX (child->box), child->label, TRUE, TRUE, 0);
+  gtk_box_pack_start (GTK_BOX (child->box), child->label, tasklist->show_labels, tasklist->show_labels, 0);
   if (!xfce_tasklist_vertical (tasklist))
     {
       /* gtk_box_reorder_child (GTK_BOX (child->box), child->icon, 0); */
@@ -3737,7 +3749,7 @@ xfce_tasklist_button_proxy_menu_item (XfceTasklistChild *child,
   provider = gtk_css_provider_new ();
   /* silly workaround for gtkcss only accepting "." as decimal separator and floats returning
      with "," as decimal separator in some locales */
-  css_string = g_strdup_printf ("image { padding: 3px; } image.minimized { opacity: %d.%02d; }",
+  css_string = g_strdup_printf ("image { padding: 10px; } image.minimized { opacity: %d.%02d; }",
                                 tasklist->minimized_icon_lucency / 100,
                                 tasklist->minimized_icon_lucency % 100);
   gtk_css_provider_load_from_data (provider, css_string, -1, NULL);
