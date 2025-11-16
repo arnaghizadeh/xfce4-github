@@ -137,6 +137,7 @@ tasklist_plugin_construct (XfcePanelPlugin *panel_plugin)
     { "middle-click", G_TYPE_UINT },
     { "label-decorations", G_TYPE_BOOLEAN },
     { "show-recent-files", G_TYPE_BOOLEAN },
+    { "show-window-previews", G_TYPE_BOOLEAN },
     { NULL }
   };
 
@@ -266,6 +267,7 @@ tasklist_plugin_configure_plugin (XfcePanelPlugin *panel_plugin)
   TASKLIST_DIALOG_BIND ("window-scrolling", "active")
   TASKLIST_DIALOG_BIND ("middle-click", "active")
   TASKLIST_DIALOG_BIND ("show-recent-files", "active")
+  TASKLIST_DIALOG_BIND ("show-window-previews", "active")
 
   if (!WINDOWING_IS_X11 ())
     {
