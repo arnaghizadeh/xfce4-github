@@ -113,6 +113,7 @@ enum
   PROP_MISC_REWRAP_ON_RESIZE,
   PROP_MISC_SLIM_TABS,
   PROP_MISC_NEW_TAB_ADJACENT,
+  PROP_MISC_BREADCRUMB_PATH_BAR,
   PROP_MISC_SEARCH_DIALOG_OPACITY,
   PROP_MISC_SHOW_UNSAFE_PASTE_DIALOG,
   PROP_MISC_RIGHT_CLICK_ACTION,
@@ -1064,6 +1065,16 @@ terminal_preferences_class_init (TerminalPreferencesClass *klass)
                           NULL,
                           "MiscNewTabAdjacent",
                           FALSE,
+                          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+  /**
+   * TerminalPreferences:misc-breadcrumb-path-bar:
+   **/
+  preferences_props[PROP_MISC_BREADCRUMB_PATH_BAR] =
+    g_param_spec_boolean ("misc-breadcrumb-path-bar",
+                          NULL,
+                          "MiscBreadcrumbPathBar",
+                          TRUE,
                           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
 
   /**

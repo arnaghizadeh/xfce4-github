@@ -35,6 +35,7 @@
 #include <gdk/gdk.h>
 #include <libxfce4ui/libxfce4ui.h>
 
+#include "terminal-breadcrumb-bar.h"
 #include "terminal-encoding-action.h"
 #include "terminal-enum-types.h"
 #include "terminal-marshal.h"
@@ -208,8 +209,6 @@ terminal_window_action_new_window (TerminalWindow *window);
 static gboolean
 terminal_window_action_open_folder (TerminalWindow *window);
 static gboolean
-terminal_window_action_open_folder_root (TerminalWindow *window);
-static gboolean
 terminal_window_action_undo_close_tab (TerminalWindow *window);
 static gboolean
 terminal_window_action_detach_tab (TerminalWindow *window);
@@ -339,12 +338,24 @@ static gboolean
 terminal_window_can_go_left (TerminalWindow *window);
 static gboolean
 terminal_window_can_go_right (TerminalWindow *window);
+static void
+terminal_window_breadcrumb_path_clicked (TerminalBreadcrumbBar *bar,
+                                         const gchar *path,
+                                         TerminalWindow *window);
+static void
+terminal_window_update_breadcrumb_bar (TerminalWindow *window);
+static void
+terminal_window_update_breadcrumb_visibility (TerminalWindow *window);
+static gboolean
+terminal_window_breadcrumb_update_timeout (gpointer user_data);
 
 
 struct _TerminalWindowPrivate
 {
   GtkWidget *vbox;
   GtkWidget *notebook;
+  GtkWidget *breadcrumb_bar;
+  guint breadcrumb_update_id;
   GtkWidget *tabs_menu; /* used for the go-to tab accelerators */
 
   /* for the drop-down to keep open with dialogs */
@@ -436,20 +447,10 @@ static XfceGtkActionEntry action_entries[] = {
     "<Actions>/terminal-window/open-folder",
     "",
     XFCE_GTK_IMAGE_MENU_ITEM,
-    N_ ("Open in File _Manager"),
+    N_ ("_Open File Manager Here"),
     N_ ("Open the current directory"),
     "folder-open",
     G_CALLBACK (terminal_window_action_open_folder),
-  },
-  {
-    TERMINAL_WINDOW_ACTION_OPEN_FOLDER_ROOT,
-    "<Actions>/terminal-window/open-folder-root",
-    "",
-    XFCE_GTK_IMAGE_MENU_ITEM,
-    N_ ("Open as _Root"),
-    N_ ("Open the current directory as root"),
-    "dialog-password",
-    G_CALLBACK (terminal_window_action_open_folder_root),
   },
   {
     TERMINAL_WINDOW_ACTION_UNDO_CLOSE_TAB,
@@ -1205,8 +1206,19 @@ terminal_window_init (TerminalWindow *window)
                     G_CALLBACK (terminal_window_notebook_scroll_event), window);
 #endif
 
+  /* Create breadcrumb bar */
+  window->priv->breadcrumb_bar = terminal_breadcrumb_bar_new ();
+  g_signal_connect (G_OBJECT (window->priv->breadcrumb_bar), "path-clicked",
+                    G_CALLBACK (terminal_window_breadcrumb_path_clicked), window);
+
+  /* Set up periodic breadcrumb update (every 500ms) */
+  window->priv->breadcrumb_update_id = g_timeout_add (500,
+                                                       terminal_window_breadcrumb_update_timeout,
+                                                       window);
+
   gtk_box_pack_start (GTK_BOX (window->priv->vbox), window->menubar, FALSE, FALSE, 0);
   gtk_box_pack_start (GTK_BOX (window->priv->vbox), window->toolbar, FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (window->priv->vbox), window->priv->breadcrumb_bar, FALSE, FALSE, 0);
   gtk_box_pack_start (GTK_BOX (window->priv->vbox), window->priv->notebook, TRUE, TRUE, 0);
   gtk_widget_show_all (window->priv->vbox);
 
@@ -1219,6 +1231,11 @@ terminal_window_init (TerminalWindow *window)
   terminal_window_update_mnemonic_modifier (window);
   g_signal_connect_swapped (G_OBJECT (window->priv->preferences), "notify::shortcuts-no-mnemonics",
                             G_CALLBACK (terminal_window_update_mnemonic_modifier), window);
+
+  /* monitor the breadcrumb-path-bar setting */
+  terminal_window_update_breadcrumb_visibility (window);
+  g_signal_connect_swapped (G_OBJECT (window->priv->preferences), "notify::misc-breadcrumb-path-bar",
+                            G_CALLBACK (terminal_window_update_breadcrumb_visibility), window);
 
   window->fullscreen_supported = TRUE;
 #ifdef ENABLE_X11
@@ -1258,6 +1275,8 @@ terminal_window_finalize (GObject *object)
                                         G_CALLBACK (terminal_window_update_mnemonic_modifier), window);
   g_signal_handlers_disconnect_by_func (G_OBJECT (window->priv->preferences),
                                         G_CALLBACK (terminal_window_notebook_show_tabs), window);
+  g_signal_handlers_disconnect_by_func (G_OBJECT (window->priv->preferences),
+                                        G_CALLBACK (terminal_window_update_breadcrumb_visibility), window);
 
   if (window->priv->preferences_dialog != NULL)
     {
@@ -1268,6 +1287,13 @@ terminal_window_finalize (GObject *object)
   g_object_unref (G_OBJECT (window->priv->preferences));
   g_object_unref (G_OBJECT (window->priv->accel_group));
   g_object_unref (G_OBJECT (window->priv->encoding_action));
+
+  /* Remove breadcrumb update timeout */
+  if (window->priv->breadcrumb_update_id != 0)
+    {
+      g_source_remove (window->priv->breadcrumb_update_id);
+      window->priv->breadcrumb_update_id = 0;
+    }
 
   g_slist_free (window->priv->tabs_menu_actions);
   g_free (window->priv->font);
@@ -1712,6 +1738,9 @@ terminal_window_notebook_page_switched (GtkNotebook *notebook,
       encoding = terminal_screen_get_encoding (window->priv->active);
       terminal_encoding_action_set_charset (window->priv->encoding_action, encoding);
       terminal_screen_widget_append_accels (active, window->priv->accel_group);
+
+      /* update breadcrumb bar */
+      terminal_window_update_breadcrumb_bar (window);
     }
 }
 
@@ -2133,7 +2162,6 @@ terminal_window_get_context_menu (TerminalScreen *screen,
   xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_NEW_TAB), G_OBJECT (window), GTK_MENU_SHELL (context_menu));
   xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_NEW_WINDOW), G_OBJECT (window), GTK_MENU_SHELL (context_menu));
   xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_OPEN_FOLDER), G_OBJECT (window), GTK_MENU_SHELL (context_menu));
-  xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_OPEN_FOLDER_ROOT), G_OBJECT (window), GTK_MENU_SHELL (context_menu));
   xfce_gtk_menu_append_separator (GTK_MENU_SHELL (context_menu));
 
   terminal_window_menu_add_section (window, context_menu, MENU_SECTION_COPY | MENU_SECTION_PASTE, FALSE);
@@ -2274,42 +2302,6 @@ terminal_window_action_open_folder (TerminalWindow *window)
         {
           xfce_dialog_show_error (GTK_WINDOW (window), error,
                                   _("Failed to open directory"));
-          g_error_free (error);
-        }
-
-      g_free (cmd);
-      g_free (dir);
-    }
-
-  return TRUE;
-}
-
-
-
-static gboolean
-terminal_window_action_open_folder_root (TerminalWindow *window)
-{
-  GError *error = NULL;
-  const gchar *directory = terminal_screen_get_working_directory (window->priv->active);
-
-  if (directory != NULL)
-    {
-      gchar *dir = g_shell_quote (directory);
-      const gchar *display = g_getenv ("DISPLAY");
-      const gchar *xauthority = g_getenv ("XAUTHORITY");
-      gchar *cmd;
-
-      if (display != NULL && xauthority != NULL)
-        cmd = g_strdup_printf ("pkexec env DISPLAY=%s XAUTHORITY=%s thunar %s", display, xauthority, dir);
-      else if (display != NULL)
-        cmd = g_strdup_printf ("pkexec env DISPLAY=%s thunar %s", display, dir);
-      else
-        cmd = g_strdup_printf ("pkexec thunar %s", dir);
-
-      if (!g_spawn_command_line_async (cmd, &error))
-        {
-          xfce_dialog_show_error (GTK_WINDOW (window), error,
-                                  _("Failed to open directory as root"));
           g_error_free (error);
         }
 
@@ -4174,6 +4166,112 @@ terminal_window_update_help_menu (TerminalWindow *window,
   xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_ABOUT), G_OBJECT (window), GTK_MENU_SHELL (menu));
 
   gtk_widget_show_all (GTK_WIDGET (menu));
+}
+
+
+
+static void
+terminal_window_breadcrumb_path_clicked (TerminalBreadcrumbBar *bar,
+                                         const gchar *path,
+                                         TerminalWindow *window)
+{
+  TerminalScreen *screen;
+  gchar *command;
+
+  g_return_if_fail (TERMINAL_IS_WINDOW (window));
+  g_return_if_fail (path != NULL);
+
+  screen = window->priv->active;
+  if (screen == NULL)
+    return;
+
+  /* Send cd command to the terminal */
+  command = g_strdup_printf ("cd %s\n", g_shell_quote (path));
+  terminal_screen_feed_text (screen, command);
+  g_free (command);
+}
+
+
+
+static gboolean
+terminal_window_breadcrumb_update_timeout (gpointer user_data)
+{
+  TerminalWindow *window = TERMINAL_WINDOW (user_data);
+
+  if (!TERMINAL_IS_WINDOW (window))
+    return FALSE;
+
+  terminal_window_update_breadcrumb_bar (window);
+
+  return TRUE; /* Continue calling */
+}
+
+
+
+static void
+terminal_window_update_breadcrumb_visibility (TerminalWindow *window)
+{
+  gboolean breadcrumb_enabled;
+
+  g_return_if_fail (TERMINAL_IS_WINDOW (window));
+
+  g_object_get (G_OBJECT (window->priv->preferences),
+                "misc-breadcrumb-path-bar", &breadcrumb_enabled,
+                NULL);
+
+  terminal_breadcrumb_bar_set_enabled (TERMINAL_BREADCRUMB_BAR (window->priv->breadcrumb_bar),
+                                       breadcrumb_enabled);
+
+  if (breadcrumb_enabled)
+    {
+      gtk_widget_show (window->priv->breadcrumb_bar);
+      terminal_window_update_breadcrumb_bar (window);
+    }
+  else
+    {
+      gtk_widget_hide (window->priv->breadcrumb_bar);
+    }
+}
+
+
+
+static void
+terminal_window_update_breadcrumb_bar (TerminalWindow *window)
+{
+  const gchar *directory;
+  gchar *compressed_path;
+
+  g_return_if_fail (TERMINAL_IS_WINDOW (window));
+
+  if (window->priv->active == NULL)
+    return;
+
+  /* Get current working directory from active screen */
+  directory = terminal_screen_get_working_directory (window->priv->active);
+
+  if (directory != NULL)
+    {
+      /* Compress home directory to ~ */
+      const gchar *home = g_get_home_dir ();
+      gsize home_len = strlen (home);
+
+      if (strncmp (directory, home, home_len) == 0 &&
+          (directory[home_len] == '/' || directory[home_len] == '\0'))
+        {
+          if (directory[home_len] == '\0')
+            compressed_path = g_strdup ("~");
+          else
+            compressed_path = g_strconcat ("~", directory + home_len, NULL);
+        }
+      else
+        {
+          compressed_path = g_strdup (directory);
+        }
+
+      terminal_breadcrumb_bar_set_path (TERMINAL_BREADCRUMB_BAR (window->priv->breadcrumb_bar),
+                                        compressed_path);
+      g_free (compressed_path);
+    }
 }
 
 

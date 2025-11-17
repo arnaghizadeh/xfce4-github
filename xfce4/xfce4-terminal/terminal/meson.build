@@ -2,6 +2,8 @@ terminal_sources = [
   'main.c',
   'terminal-app.c',
   'terminal-app.h',
+  'terminal-breadcrumb-bar.c',
+  'terminal-breadcrumb-bar.h',
   'terminal-encoding-action.c',
   'terminal-encoding-action.h',
   'terminal-gdbus.c',
