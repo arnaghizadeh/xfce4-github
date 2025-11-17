@@ -1,0 +1,8 @@
+[Xfce Panel]
+Type=X-XFCE-PanelPlugin
+Name=ScreenshotPlus
+Comment=Take screenshots of the entire screen or individual windows
+Icon=org.xfce.screenshooter
+X-XFCE-Module=screenshotplus
+X-XFCE-Internal=FALSE
+X-XFCE-API=@LIBXFCE4PANEL_VERSION_API@
