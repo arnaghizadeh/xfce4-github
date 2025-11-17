@@ -25,6 +25,7 @@
 #include <libxfce4ui/libxfce4ui.h>
 #include <libxfce4windowing/libxfce4windowing.h>
 #include <libxfce4windowingui/libxfce4windowingui.h>
+#include <gio/gdesktopappinfo.h>
 
 #ifdef ENABLE_X11
 #include <X11/Xlib.h>
@@ -497,6 +498,10 @@ xfce_tasklist_recent_files_clear_activate (GtkMenuItem *item,
                                            XfceTasklist *tasklist);
 static GtkWidget *
 xfce_tasklist_create_recent_files_menu (XfceTasklistChild *child);
+static gboolean
+xfce_tasklist_is_file_pinned (XfceTasklist *tasklist,
+                              const gchar *app_name,
+                              const gchar *uri);
 
 /* potential public functions */
 static void
@@ -5396,6 +5401,175 @@ xfce_tasklist_recent_files_sort_by_time (gconstpointer a,
 
 
 
+/* Helper function to get supported MIME types for an application from .desktop file */
+static gchar **
+xfce_tasklist_get_app_mime_types (XfwApplication *app)
+{
+  const gchar *app_name = NULL;
+  const gchar *app_class_id = NULL;
+  gchar *desktop_file_path = NULL;
+  GKeyFile *key_file = NULL;
+  gchar **mime_types = NULL;
+  const gchar *desktop_dirs[] = {
+    NULL, /* Will be set to user's home .local/share/applications */
+    "/usr/share/applications",
+    "/usr/local/share/applications",
+    NULL
+  };
+  gchar *user_apps_dir = NULL;
+
+  if (app == NULL)
+    return NULL;
+
+  app_name = xfw_application_get_name (app);
+  app_class_id = xfw_application_get_class_id (app);
+
+  /* Set user's applications directory */
+  user_apps_dir = g_build_filename (g_get_user_data_dir (), "applications", NULL);
+  desktop_dirs[0] = user_apps_dir;
+
+  /* Try to find .desktop file for this app */
+  for (gint dir_idx = 0; desktop_dirs[dir_idx] != NULL; dir_idx++)
+    {
+      /* Try various naming patterns */
+      const gchar *patterns[] = { "%s.desktop", "%s.Desktop", NULL };
+      const gchar *names[] = { app_class_id, app_name, NULL };
+
+      for (gint name_idx = 0; names[name_idx] != NULL; name_idx++)
+        {
+          if (names[name_idx] == NULL)
+            continue;
+
+          for (gint pat_idx = 0; patterns[pat_idx] != NULL; pat_idx++)
+            {
+              gchar *filename = g_strdup_printf (patterns[pat_idx], names[name_idx]);
+              gchar *path = g_build_filename (desktop_dirs[dir_idx], filename, NULL);
+              g_free (filename);
+
+              if (g_file_test (path, G_FILE_TEST_EXISTS))
+                {
+                  desktop_file_path = path;
+                  break;
+                }
+              g_free (path);
+            }
+          if (desktop_file_path != NULL)
+            break;
+        }
+      if (desktop_file_path != NULL)
+        break;
+    }
+
+  g_free (user_apps_dir);
+
+  if (desktop_file_path == NULL)
+    return NULL;
+
+  /* Parse the .desktop file */
+  key_file = g_key_file_new ();
+  if (g_key_file_load_from_file (key_file, desktop_file_path, G_KEY_FILE_NONE, NULL))
+    {
+      mime_types = g_key_file_get_string_list (key_file, "Desktop Entry", "MimeType", NULL, NULL);
+    }
+
+  g_key_file_free (key_file);
+  g_free (desktop_file_path);
+
+  return mime_types;
+}
+
+
+/* Helper function to check if file MIME type matches app-supported types */
+static gboolean
+xfce_tasklist_mime_type_matches_app (const gchar *file_mime_type,
+                                     gchar **app_mime_types)
+{
+  if (file_mime_type == NULL || app_mime_types == NULL)
+    return FALSE;
+
+  for (gint i = 0; app_mime_types[i] != NULL; i++)
+    {
+      const gchar *app_mime = app_mime_types[i];
+
+      /* Exact match */
+      if (g_ascii_strcasecmp (file_mime_type, app_mime) == 0)
+        return TRUE;
+
+      /* Wildcard match (e.g., "image/*" matches "image/png") */
+      if (g_str_has_suffix (app_mime, "/*"))
+        {
+          gchar *prefix = g_strndup (app_mime, strlen (app_mime) - 2);
+          gboolean matches = g_str_has_prefix (file_mime_type, prefix);
+          g_free (prefix);
+          if (matches)
+            return TRUE;
+        }
+    }
+
+  return FALSE;
+}
+
+
+/* Helper function to check if app is Thunar (file manager) */
+static gboolean
+xfce_tasklist_is_file_manager_app (XfwApplication *app)
+{
+  const gchar *app_name = NULL;
+  const gchar *app_class_id = NULL;
+
+  if (app == NULL)
+    return FALSE;
+
+  app_name = xfw_application_get_name (app);
+  app_class_id = xfw_application_get_class_id (app);
+
+  /* Check common file manager names */
+  const gchar *file_managers[] = {
+    "thunar", "Thunar", "nautilus", "Nautilus", "nemo", "Nemo",
+    "caja", "Caja", "pcmanfm", "PCManFM", "dolphin", "Dolphin", NULL
+  };
+
+  for (gint i = 0; file_managers[i] != NULL; i++)
+    {
+      if ((app_name != NULL && g_ascii_strcasecmp (app_name, file_managers[i]) == 0)
+          || (app_class_id != NULL && g_ascii_strcasecmp (app_class_id, file_managers[i]) == 0))
+        return TRUE;
+    }
+
+  return FALSE;
+}
+
+
+/* Helper function to check if app is a terminal */
+static gboolean
+xfce_tasklist_is_terminal_app (XfwApplication *app)
+{
+  const gchar *app_name = NULL;
+  const gchar *app_class_id = NULL;
+
+  if (app == NULL)
+    return FALSE;
+
+  app_name = xfw_application_get_name (app);
+  app_class_id = xfw_application_get_class_id (app);
+
+  /* Check common terminal emulator names */
+  const gchar *terminals[] = {
+    "xfce4-terminal", "Terminal", "gnome-terminal", "konsole",
+    "terminator", "tilix", "alacritty", "kitty", "urxvt", NULL
+  };
+
+  for (gint i = 0; terminals[i] != NULL; i++)
+    {
+      if ((app_name != NULL && g_ascii_strcasecmp (app_name, terminals[i]) == 0)
+          || (app_class_id != NULL && g_ascii_strcasecmp (app_class_id, terminals[i]) == 0))
+        return TRUE;
+    }
+
+  return FALSE;
+}
+
+
 static GList *
 xfce_tasklist_get_recent_files_for_app (XfceTasklist *tasklist,
                                         XfwApplication *app)
@@ -5405,6 +5579,9 @@ xfce_tasklist_get_recent_files_for_app (XfceTasklist *tasklist,
   GtkRecentInfo *info;
   const gchar *app_name = NULL;
   const gchar *app_class_id = NULL;
+  gchar **app_mime_types = NULL;
+  gboolean is_file_manager = FALSE;
+  gboolean is_terminal = FALSE;
   gint count = 0;
   const gint max_items = 10;
 
@@ -5417,6 +5594,9 @@ xfce_tasklist_get_recent_files_for_app (XfceTasklist *tasklist,
     {
       app_name = xfw_application_get_name (app);
       app_class_id = xfw_application_get_class_id (app);
+      app_mime_types = xfce_tasklist_get_app_mime_types (app);
+      is_file_manager = xfce_tasklist_is_file_manager_app (app);
+      is_terminal = xfce_tasklist_is_terminal_app (app);
     }
 
   all_items = gtk_recent_manager_get_items (tasklist->recent_manager);
@@ -5440,8 +5620,10 @@ xfce_tasklist_get_recent_files_for_app (XfceTasklist *tasklist,
       if (app != NULL)
         {
           gboolean matches = FALSE;
+          const gchar *mime_type = gtk_recent_info_get_mime_type (info);
           gchar **apps = gtk_recent_info_get_applications (info, NULL);
 
+          /* First try: Match by application name recorded in GTK recent files */
           if (apps != NULL)
             {
               for (gint i = 0; apps[i] != NULL; i++)
@@ -5469,6 +5651,35 @@ xfce_tasklist_get_recent_files_for_app (XfceTasklist *tasklist,
               g_strfreev (apps);
             }
 
+          /* Second try: Match by MIME type if we have app's supported types */
+          if (!matches && app_mime_types != NULL && mime_type != NULL)
+            {
+              matches = xfce_tasklist_mime_type_matches_app (mime_type, app_mime_types);
+            }
+
+          /* Special handling for file managers - show all file types */
+          if (!matches && is_file_manager)
+            {
+              /* File managers can open directories and most file types */
+              if (mime_type != NULL &&
+                  (g_str_has_prefix (mime_type, "inode/directory") ||
+                   g_str_has_prefix (mime_type, "text/") ||
+                   g_str_has_prefix (mime_type, "image/") ||
+                   g_str_has_prefix (mime_type, "video/") ||
+                   g_str_has_prefix (mime_type, "audio/") ||
+                   g_str_has_prefix (mime_type, "application/")))
+                {
+                  matches = TRUE;
+                }
+            }
+
+          /* Special handling for terminals - skip them for now */
+          /* Terminals would need special handling to parse shell history */
+          if (is_terminal)
+            {
+              matches = FALSE;
+            }
+
           if (!matches)
             continue;
         }
@@ -5481,50 +5692,146 @@ xfce_tasklist_get_recent_files_for_app (XfceTasklist *tasklist,
   /* Free all items */
   g_list_free_full (all_items, (GDestroyNotify) gtk_recent_info_unref);
 
-  /* If no app-specific items found, return generic recent files as fallback */
-  if (filtered_items == NULL)
+  /* Free MIME types array */
+  if (app_mime_types != NULL)
+    g_strfreev (app_mime_types);
+
+  /* Sort filtered list: pinned files first, then by time */
+  if (filtered_items != NULL && app_name != NULL)
     {
-      all_items = gtk_recent_manager_get_items (tasklist->recent_manager);
-      all_items = g_list_sort (all_items, xfce_tasklist_recent_files_sort_by_time);
+      GList *pinned = NULL;
+      GList *unpinned = NULL;
+      GList *li_next;
 
-      for (li = all_items; li != NULL && count < max_items; li = li->next)
+      for (li = filtered_items; li != NULL; li = li_next)
         {
+          li_next = li->next;
           info = (GtkRecentInfo *) li->data;
+          const gchar *uri = gtk_recent_info_get_uri (info);
 
-          if (!gtk_recent_info_is_local (info))
-            continue;
-
-          filtered_items = g_list_append (filtered_items, gtk_recent_info_ref (info));
-          count++;
+          if (xfce_tasklist_is_file_pinned (tasklist, app_name, uri))
+            {
+              /* Add to pinned list */
+              pinned = g_list_append (pinned, li->data);
+            }
+          else
+            {
+              /* Add to unpinned list */
+              unpinned = g_list_append (unpinned, li->data);
+            }
         }
 
-      g_list_free_full (all_items, (GDestroyNotify) gtk_recent_info_unref);
+      /* Free the old list structure (but not data) */
+      g_list_free (filtered_items);
+
+      /* Concatenate: pinned first, then unpinned */
+      filtered_items = g_list_concat (pinned, unpinned);
     }
+
+  /* If no app-specific items found and not a terminal, show nothing */
+  /* (Changed behavior: don't fall back to global recent files) */
 
   return filtered_items;
 }
 
 
 
+/* Structure to hold data for recent file activation */
+typedef struct
+{
+  gchar *uri;
+  XfwApplication *app;
+} RecentFileData;
+
+
+static void
+xfce_tasklist_recent_file_data_free (RecentFileData *data)
+{
+  if (data != NULL)
+    {
+      g_free (data->uri);
+      if (data->app != NULL)
+        g_object_unref (data->app);
+      g_free (data);
+    }
+}
+
+
 static void
 xfce_tasklist_recent_files_menu_item_activate (GtkMenuItem *item,
                                                gpointer user_data)
 {
-  const gchar *uri;
+  RecentFileData *data;
   GError *error = NULL;
   GAppLaunchContext *context;
   GdkDisplay *display;
+  GFile *file = NULL;
+  GList *files = NULL;
+  const gchar *app_name = NULL;
+  const gchar *app_class_id = NULL;
+  GAppInfo *app_info = NULL;
 
-  uri = (const gchar *) g_object_get_data (G_OBJECT (item), "recent-uri");
-  if (uri == NULL)
+  data = (RecentFileData *) g_object_get_data (G_OBJECT (item), "recent-file-data");
+  if (data == NULL || data->uri == NULL)
     return;
 
   display = gdk_display_get_default ();
   context = G_APP_LAUNCH_CONTEXT (gdk_display_get_app_launch_context (display));
 
-  if (!g_app_info_launch_default_for_uri (uri, context, &error))
+  /* Try to launch with the specific application if we have one */
+  if (data->app != NULL)
     {
-      g_warning ("Failed to open recent file %s: %s", uri, error->message);
+      app_name = xfw_application_get_name (data->app);
+      app_class_id = xfw_application_get_class_id (data->app);
+
+      /* Try to get the GAppInfo for this application */
+      if (app_class_id != NULL)
+        {
+          gchar *desktop_id = g_strdup_printf ("%s.desktop", app_class_id);
+          app_info = G_APP_INFO (g_desktop_app_info_new (desktop_id));
+          g_free (desktop_id);
+        }
+
+      /* Fallback: try with app name */
+      if (app_info == NULL && app_name != NULL)
+        {
+          gchar *desktop_id = g_strdup_printf ("%s.desktop", app_name);
+          app_info = G_APP_INFO (g_desktop_app_info_new (desktop_id));
+          g_free (desktop_id);
+        }
+
+      /* If we found the app info, try to launch with it */
+      if (app_info != NULL)
+        {
+          file = g_file_new_for_uri (data->uri);
+          files = g_list_append (files, file);
+
+          if (!g_app_info_launch (app_info, files, context, &error))
+            {
+              g_warning ("Failed to open recent file %s with %s: %s",
+                         data->uri, app_name ? app_name : app_class_id, error->message);
+              g_clear_error (&error);
+            }
+          else
+            {
+              /* Success - clean up and return */
+              g_list_free (files);
+              g_object_unref (file);
+              g_object_unref (app_info);
+              g_object_unref (context);
+              return;
+            }
+
+          g_list_free (files);
+          g_object_unref (file);
+          g_object_unref (app_info);
+        }
+    }
+
+  /* Fallback: use default application for the URI */
+  if (!g_app_info_launch_default_for_uri (data->uri, context, &error))
+    {
+      g_warning ("Failed to open recent file %s: %s", data->uri, error->message);
       g_error_free (error);
     }
 
@@ -5553,6 +5860,215 @@ xfce_tasklist_recent_files_clear_activate (GtkMenuItem *item,
 
 
 
+/* Helper function: Get config file path for pinned files */
+static gchar *
+xfce_tasklist_get_pinned_files_path (void)
+{
+  const gchar *config_dir = g_get_user_config_dir ();
+  gchar *path = g_build_filename (config_dir, "xfce4", "panel", "tasklist-pinned-files.conf", NULL);
+  return path;
+}
+
+
+/* Helper function: Load pinned files for an app from config file */
+static GHashTable *
+xfce_tasklist_load_pinned_files (void)
+{
+  GHashTable *pinned_files;
+  GKeyFile *keyfile;
+  gchar *config_path;
+  gchar **groups;
+  gsize num_groups;
+
+  pinned_files = g_hash_table_new_full (g_str_hash, g_str_equal, g_free,
+                                         (GDestroyNotify) g_hash_table_destroy);
+
+  config_path = xfce_tasklist_get_pinned_files_path ();
+  keyfile = g_key_file_new ();
+
+  if (g_key_file_load_from_file (keyfile, config_path, G_KEY_FILE_NONE, NULL))
+    {
+      groups = g_key_file_get_groups (keyfile, &num_groups);
+      for (gsize i = 0; i < num_groups; i++)
+        {
+          gchar **uris = g_key_file_get_string_list (keyfile, groups[i], "pinned", NULL, NULL);
+          if (uris != NULL)
+            {
+              GHashTable *app_pins = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+              for (gint j = 0; uris[j] != NULL; j++)
+                {
+                  g_hash_table_insert (app_pins, g_strdup (uris[j]), GINT_TO_POINTER (1));
+                }
+              g_hash_table_insert (pinned_files, g_strdup (groups[i]), app_pins);
+              g_strfreev (uris);
+            }
+        }
+      g_strfreev (groups);
+    }
+
+  g_key_file_free (keyfile);
+  g_free (config_path);
+
+  return pinned_files;
+}
+
+
+/* Helper function: Save pinned files to config file */
+static void
+xfce_tasklist_save_pinned_files (GHashTable *pinned_files)
+{
+  GKeyFile *keyfile;
+  gchar *config_path;
+  gchar *config_dir;
+  gchar *data;
+  GHashTableIter iter;
+  gpointer key, value;
+
+  config_path = xfce_tasklist_get_pinned_files_path ();
+  config_dir = g_path_get_dirname (config_path);
+  g_mkdir_with_parents (config_dir, 0700);
+
+  keyfile = g_key_file_new ();
+
+  g_hash_table_iter_init (&iter, pinned_files);
+  while (g_hash_table_iter_next (&iter, &key, &value))
+    {
+      const gchar *app_name = key;
+      GHashTable *app_pins = value;
+      GHashTableIter uri_iter;
+      gpointer uri_key;
+      GPtrArray *uri_array = g_ptr_array_new ();
+
+      g_hash_table_iter_init (&uri_iter, app_pins);
+      while (g_hash_table_iter_next (&uri_iter, &uri_key, NULL))
+        {
+          g_ptr_array_add (uri_array, uri_key);
+        }
+
+      if (uri_array->len > 0)
+        {
+          g_ptr_array_add (uri_array, NULL);
+          g_key_file_set_string_list (keyfile, app_name, "pinned",
+                                       (const gchar * const *) uri_array->pdata,
+                                       uri_array->len - 1);
+        }
+      g_ptr_array_free (uri_array, TRUE);
+    }
+
+  data = g_key_file_to_data (keyfile, NULL, NULL);
+  g_file_set_contents (config_path, data, -1, NULL);
+
+  g_free (data);
+  g_key_file_free (keyfile);
+  g_free (config_dir);
+  g_free (config_path);
+}
+
+
+/* Helper function: Check if file is pinned */
+static gboolean
+xfce_tasklist_is_file_pinned (XfceTasklist *tasklist,
+                              const gchar *app_name,
+                              const gchar *uri)
+{
+  GHashTable *pinned_files;
+  GHashTable *app_pins;
+  gboolean is_pinned = FALSE;
+
+  if (app_name == NULL || uri == NULL)
+    return FALSE;
+
+  pinned_files = xfce_tasklist_load_pinned_files ();
+  app_pins = g_hash_table_lookup (pinned_files, app_name);
+
+  if (app_pins != NULL)
+    {
+      is_pinned = g_hash_table_contains (app_pins, uri);
+    }
+
+  g_hash_table_destroy (pinned_files);
+  return is_pinned;
+}
+
+
+/* Helper function: Toggle pin state for a file */
+static void
+xfce_tasklist_toggle_file_pin (XfceTasklist *tasklist,
+                               const gchar *app_name,
+                               const gchar *uri)
+{
+  GHashTable *pinned_files;
+  GHashTable *app_pins;
+
+  if (app_name == NULL || uri == NULL)
+    return;
+
+  pinned_files = xfce_tasklist_load_pinned_files ();
+  app_pins = g_hash_table_lookup (pinned_files, app_name);
+
+  if (app_pins == NULL)
+    {
+      app_pins = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+      g_hash_table_insert (pinned_files, g_strdup (app_name), app_pins);
+    }
+
+  if (g_hash_table_contains (app_pins, uri))
+    {
+      /* Unpin */
+      g_hash_table_remove (app_pins, uri);
+    }
+  else
+    {
+      /* Pin */
+      g_hash_table_insert (app_pins, g_strdup (uri), GINT_TO_POINTER (1));
+    }
+
+  xfce_tasklist_save_pinned_files (pinned_files);
+  g_hash_table_destroy (pinned_files);
+}
+
+
+/* Forward declaration - we'll define this after xfce_tasklist_create_recent_files_menu */
+static void xfce_tasklist_populate_recent_files_menu (XfceTasklistChild *child, GtkWidget *menu);
+
+/* Callback for pin button click */
+static gboolean
+xfce_tasklist_recent_files_pin_button_press (GtkWidget *button,
+                                              GdkEventButton *event,
+                                              gpointer user_data)
+{
+  GtkWidget *label = GTK_WIDGET (user_data);
+  const gchar *uri = g_object_get_data (G_OBJECT (button), "file-uri");
+  const gchar *app_name = g_object_get_data (G_OBJECT (button), "app-name");
+  XfceTasklist *tasklist = g_object_get_data (G_OBJECT (button), "tasklist");
+  XfceTasklistChild *child = g_object_get_data (G_OBJECT (button), "child");
+  GtkWidget *submenu = g_object_get_data (G_OBJECT (button), "submenu");
+
+  if (uri == NULL || app_name == NULL || tasklist == NULL || child == NULL || submenu == NULL)
+    return TRUE;  /* Stop propagation */
+
+  /* Toggle pin state in storage */
+  xfce_tasklist_toggle_file_pin (tasklist, app_name, uri);
+
+  /* Clear the submenu */
+  GList *children = gtk_container_get_children (GTK_CONTAINER (submenu));
+  for (GList *li = children; li != NULL; li = li->next)
+    {
+      gtk_widget_destroy (GTK_WIDGET (li->data));
+    }
+  g_list_free (children);
+
+  /* Rebuild the submenu with new pin state */
+  xfce_tasklist_populate_recent_files_menu (child, submenu);
+
+  /* Show all new widgets */
+  gtk_widget_show_all (submenu);
+
+  /* Return TRUE to stop event propagation - prevents menu item activation */
+  return TRUE;
+}
+
+
 static gchar *
 xfce_tasklist_format_time_ago (time_t timestamp)
 {
@@ -5578,10 +6094,10 @@ xfce_tasklist_format_time_ago (time_t timestamp)
 
 
 
-static GtkWidget *
-xfce_tasklist_create_recent_files_menu (XfceTasklistChild *child)
+/* Helper function to populate menu with recent files */
+static void
+xfce_tasklist_populate_recent_files_menu (XfceTasklistChild *child, GtkWidget *menu)
 {
-  GtkWidget *menu;
   GtkWidget *box;
   GtkWidget *item;
   GtkWidget *image;
@@ -5596,22 +6112,38 @@ xfce_tasklist_create_recent_files_menu (XfceTasklistChild *child)
   gchar *time_str;
   GIcon *gicon;
 
-  panel_return_val_if_fail (child != NULL, NULL);
-  panel_return_val_if_fail (XFCE_IS_TASKLIST (child->tasklist), NULL);
-
-  menu = gtk_menu_new ();
-  gtk_widget_set_name (menu, "recent-files-menu");
+  panel_return_if_fail (child != NULL);
+  panel_return_if_fail (XFCE_IS_TASKLIST (child->tasklist));
+  panel_return_if_fail (GTK_IS_MENU (menu));
 
   /* Get recent files for this app */
   recent_files = xfce_tasklist_get_recent_files_for_app (child->tasklist, child->app);
 
   if (recent_files == NULL || g_list_length (recent_files) == 0)
     {
-      /* No recent files available */
-      item = gtk_menu_item_new_with_label (_("No recent files"));
+      /* No recent files available for this application */
+      const gchar *app_name = NULL;
+      gchar *message = NULL;
+
+      if (child->app != NULL)
+        app_name = xfw_application_get_name (child->app);
+
+      if (app_name != NULL && strlen (app_name) > 0)
+        {
+          /* Show app-specific message */
+          message = g_strdup_printf (_("No recent files for %s"), app_name);
+        }
+      else
+        {
+          /* Fallback message */
+          message = g_strdup (_("No recent files for this application"));
+        }
+
+      item = gtk_menu_item_new_with_label (message);
       gtk_widget_set_sensitive (item, FALSE);
       gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
       gtk_widget_show (item);
+      g_free (message);
     }
   else
     {
@@ -5680,8 +6212,35 @@ xfce_tasklist_create_recent_files_menu (XfceTasklistChild *child)
 
           gtk_box_pack_start (GTK_BOX (label_box), time_label, FALSE, FALSE, 0);
 
-          /* Store URI for activation */
-          g_object_set_data_full (G_OBJECT (item), "recent-uri", g_strdup (uri), g_free);
+          /* Add pin button */
+          const gchar *app_name = child->app ? xfw_application_get_name (child->app) : "Unknown";
+          gboolean is_pinned = xfce_tasklist_is_file_pinned (child->tasklist, app_name, uri);
+
+          GtkWidget *pin_button = gtk_event_box_new ();
+          GtkWidget *pin_label = gtk_label_new (is_pinned ? "📌" : "○");
+          gtk_container_add (GTK_CONTAINER (pin_button), pin_label);
+          gtk_widget_set_tooltip_text (pin_button,
+              is_pinned ? "Unpin this file" : "Pin this file to top");
+          gtk_box_pack_end (GTK_BOX (box), pin_button, FALSE, FALSE, 0);
+
+          /* Store data for pin button */
+          g_object_set_data_full (G_OBJECT (pin_button), "file-uri", g_strdup (uri), g_free);
+          g_object_set_data_full (G_OBJECT (pin_button), "app-name", g_strdup (app_name), g_free);
+          g_object_set_data (G_OBJECT (pin_button), "tasklist", child->tasklist);
+          g_object_set_data (G_OBJECT (pin_button), "child", child);
+          g_object_set_data (G_OBJECT (pin_button), "submenu", menu);
+
+          /* Connect button-press-event to stop propagation */
+          g_signal_connect (G_OBJECT (pin_button), "button-press-event",
+                            G_CALLBACK (xfce_tasklist_recent_files_pin_button_press), pin_label);
+
+          /* Store URI and app for activation */
+          RecentFileData *file_data = g_new0 (RecentFileData, 1);
+          file_data->uri = g_strdup (uri);
+          if (child->app != NULL)
+            file_data->app = g_object_ref (child->app);
+          g_object_set_data_full (G_OBJECT (item), "recent-file-data", file_data,
+                                  (GDestroyNotify) xfce_tasklist_recent_file_data_free);
 
           /* Set tooltip with full path */
           tooltip = g_filename_from_uri (uri, NULL, NULL);
@@ -5714,6 +6273,22 @@ xfce_tasklist_create_recent_files_menu (XfceTasklistChild *child)
   /* Free the recent files list */
   if (recent_files != NULL)
     g_list_free_full (recent_files, (GDestroyNotify) gtk_recent_info_unref);
+}
+
+
+static GtkWidget *
+xfce_tasklist_create_recent_files_menu (XfceTasklistChild *child)
+{
+  GtkWidget *menu;
+
+  panel_return_val_if_fail (child != NULL, NULL);
+  panel_return_val_if_fail (XFCE_IS_TASKLIST (child->tasklist), NULL);
+
+  menu = gtk_menu_new ();
+  gtk_widget_set_name (menu, "recent-files-menu");
+
+  /* Populate the menu */
+  xfce_tasklist_populate_recent_files_menu (child, menu);
 
   return menu;
 }
