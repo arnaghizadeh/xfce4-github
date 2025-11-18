@@ -136,6 +136,8 @@ enum
   PROP_CELL_WIDTH_SCALE,
   PROP_CELL_HEIGHT_SCALE,
   PROP_ENABLE_SIXEL,
+  PROP_MISC_FILE_SELECTION_ENABLED,
+  PROP_MISC_FILE_SELECTION_DOUBLE_CLICK_OPENS,
   N_PROPERTIES,
 };
 
@@ -1290,6 +1292,33 @@ terminal_preferences_class_init (TerminalPreferencesClass *klass)
     g_param_spec_boolean ("enable-sixel",
                           NULL,
                           "EnableSixel",
+                          TRUE,
+                          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+  /**
+   * TerminalPreferences:misc-file-selection-enabled:
+   *
+   * Enable file selection overlay in terminal output. When enabled,
+   * file and directory names printed by commands like ls can be
+   * selected with mouse click and highlighted like in a file manager.
+   **/
+  preferences_props[PROP_MISC_FILE_SELECTION_ENABLED] =
+    g_param_spec_boolean ("misc-file-selection-enabled",
+                          NULL,
+                          "MiscFileSelectionEnabled",
+                          TRUE,
+                          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+  /**
+   * TerminalPreferences:misc-file-selection-double-click-opens:
+   *
+   * When enabled, double-clicking on a selected file/directory
+   * will open it in Thunar file manager.
+   **/
+  preferences_props[PROP_MISC_FILE_SELECTION_DOUBLE_CLICK_OPENS] =
+    g_param_spec_boolean ("misc-file-selection-double-click-opens",
+                          NULL,
+                          "MiscFileSelectionDoubleClickOpens",
                           TRUE,
                           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
 

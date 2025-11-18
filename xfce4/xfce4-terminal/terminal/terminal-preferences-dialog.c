@@ -1605,6 +1605,30 @@ terminal_preferences_dialog_init (TerminalPreferencesDialog *dialog)
   /* next row */
   row++;
 
+  button = gtk_check_button_new_with_mnemonic (_("Enable file selection in terminal output"));
+  gtk_widget_set_tooltip_text (button, _("When enabled, file and directory names printed by commands like 'ls' can be clicked and highlighted like in a file manager. Use Ctrl+Click to select multiple items."));
+  g_object_bind_property (G_OBJECT (dialog->preferences), "misc-file-selection-enabled",
+                          G_OBJECT (button), "active",
+                          G_BINDING_BIDIRECTIONAL | G_BINDING_SYNC_CREATE);
+  gtk_grid_attach (GTK_GRID (grid), button, 0, row, 2, 1);
+  gtk_widget_show (button);
+
+  /* next row */
+  row++;
+
+  button = gtk_check_button_new_with_mnemonic (_("Double-click opens file in Thunar"));
+  gtk_widget_set_tooltip_text (button, _("When enabled, double-clicking on a selected file or directory will open it in the Thunar file manager."));
+  g_object_bind_property (G_OBJECT (dialog->preferences), "misc-file-selection-double-click-opens",
+                          G_OBJECT (button), "active",
+                          G_BINDING_BIDIRECTIONAL | G_BINDING_SYNC_CREATE);
+  g_object_bind_property (G_OBJECT (dialog->preferences), "misc-file-selection-enabled",
+                          G_OBJECT (button), "visible",
+                          G_BINDING_DEFAULT | G_BINDING_SYNC_CREATE);
+  gtk_grid_attach (GTK_GRID (grid), button, 0, row, 2, 1);
+
+  /* next row */
+  row++;
+
   button = gtk_check_button_new_with_mnemonic (_("_Auto-hide mouse pointer"));
   g_object_bind_property (G_OBJECT (dialog->preferences), "misc-mouse-autohide",
                           G_OBJECT (button), "active",

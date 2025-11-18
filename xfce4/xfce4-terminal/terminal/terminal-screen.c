@@ -46,6 +46,7 @@
 #include <xfconf/xfconf.h>
 
 #include "terminal-enum-types.h"
+#include "terminal-file-selection.h"
 #include "terminal-image-loader.h"
 #include "terminal-marshal.h"
 #include "terminal-private.h"
@@ -220,6 +221,24 @@ terminal_screen_paste_unsafe_text (TerminalScreen *screen,
                                    GdkAtom original_clipboard);
 static void
 terminal_screen_update_sixel (TerminalScreen *screen);
+static void
+terminal_screen_update_file_selection (TerminalScreen *screen);
+static gboolean
+terminal_screen_file_selection_button_press (GtkWidget *widget,
+                                             GdkEventButton *event,
+                                             TerminalScreen *screen);
+static gboolean
+terminal_screen_file_selection_motion (GtkWidget *widget,
+                                       GdkEventMotion *event,
+                                       TerminalScreen *screen);
+static gboolean
+terminal_screen_file_selection_draw (GtkWidget *widget,
+                                     cairo_t *cr,
+                                     TerminalScreen *screen);
+static void
+terminal_screen_file_selection_activated (TerminalFileSelection *selection,
+                                          const gchar *path,
+                                          TerminalScreen *screen);
 
 
 
@@ -233,6 +252,7 @@ struct _TerminalScreen
   GtkOverlay parent_instance;
   TerminalPreferences *preferences;
   TerminalImageLoader *loader;
+  TerminalFileSelection *file_selection;
   GtkWidget *swin;
   GtkWidget *terminal;
   GtkWidget *scrollbar;
@@ -438,6 +458,23 @@ terminal_screen_init (TerminalScreen *screen)
   terminal_screen_update_colors (screen);
   terminal_screen_update_sixel (screen);
 
+  /* Initialize file selection overlay */
+  screen->file_selection = terminal_file_selection_new (VTE_TERMINAL (screen->terminal));
+  terminal_file_selection_set_working_directory (screen->file_selection, screen->working_directory);
+  terminal_screen_update_file_selection (screen);
+
+  /* Connect file selection signals - use g_signal_connect to run before VTE's handlers
+   * and add GDK_BUTTON_PRESS_MASK to ensure we receive button events */
+  gtk_widget_add_events (GTK_WIDGET (screen->terminal), GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK);
+  g_signal_connect (G_OBJECT (screen->terminal), "button-press-event",
+                    G_CALLBACK (terminal_screen_file_selection_button_press), screen);
+  g_signal_connect (G_OBJECT (screen->terminal), "motion-notify-event",
+                    G_CALLBACK (terminal_screen_file_selection_motion), screen);
+  g_signal_connect_after (G_OBJECT (screen->terminal), "draw",
+                          G_CALLBACK (terminal_screen_file_selection_draw), screen);
+  g_signal_connect (G_OBJECT (screen->file_selection), "file-activated",
+                    G_CALLBACK (terminal_screen_file_selection_activated), screen);
+
   /* last, connect contents-changed to avoid a race with updates above */
   g_signal_connect_swapped (G_OBJECT (screen->terminal), "contents-changed",
                             G_CALLBACK (terminal_screen_vte_window_contents_changed), screen);
@@ -462,6 +499,9 @@ terminal_screen_finalize (GObject *object)
 
   if (screen->loader != NULL)
     g_object_unref (G_OBJECT (screen->loader));
+
+  if (screen->file_selection != NULL)
+    g_object_unref (G_OBJECT (screen->file_selection));
 
   g_cancellable_cancel (screen->cancellable);
   g_object_unref (screen->cancellable);
@@ -729,6 +769,8 @@ terminal_screen_preferences_changed (TerminalPreferences *preferences,
     terminal_screen_update_label_orientation (screen);
   else if (strcmp ("enable-sixel", name) == 0)
     terminal_screen_update_sixel (screen);
+  else if (strncmp ("misc-file-selection", name, strlen ("misc-file-selection")) == 0)
+    terminal_screen_update_file_selection (screen);
 }
 
 
@@ -1713,15 +1755,27 @@ terminal_screen_vte_window_contents_changed (TerminalScreen *screen)
   GdkRGBA color;
   GdkRGBA label_color;
   gboolean has_color;
+  gboolean skip_activity_update;
 
   g_return_if_fail (TERMINAL_IS_SCREEN (screen));
-  g_return_if_fail (GTK_IS_LABEL (screen->tab_label));
-  g_return_if_fail (TERMINAL_IS_PREFERENCES (screen->preferences));
 
-  /* leave if we should not start an update */
-  if (screen->tab_label == NULL
+  /* Update file selection when content changes - this should always run
+   * regardless of focus state or activity timeouts */
+  if (screen->file_selection != NULL)
+    terminal_file_selection_update_from_contents (screen->file_selection);
+
+  /* Now check additional requirements for tab activity update */
+  if (!GTK_IS_LABEL (screen->tab_label))
+    return;
+  if (!TERMINAL_IS_PREFERENCES (screen->preferences))
+    return;
+
+  /* Check if we should skip activity indicator update */
+  skip_activity_update = (screen->tab_label == NULL
       || (gtk_widget_get_state_flags (screen->terminal) & GTK_STATE_FLAG_FOCUSED) != 0
-      || time (NULL) - screen->activity_resize_time <= 1)
+      || time (NULL) - screen->activity_resize_time <= 1);
+
+  if (skip_activity_update)
     return;
 
   /* get the reset time, leave if this feature is disabled */
@@ -2533,6 +2587,10 @@ terminal_screen_set_working_directory (TerminalScreen *screen,
 
   g_free (screen->working_directory);
   screen->working_directory = g_strdup (directory);
+
+  /* Update file selection working directory */
+  if (screen->file_selection != NULL)
+    terminal_file_selection_set_working_directory (screen->file_selection, directory);
 }
 
 
@@ -3221,7 +3279,7 @@ terminal_screen_widget_append_accels (TerminalScreen *screen,
 
 
 
-void
+static void
 terminal_screen_update_sixel (TerminalScreen *screen)
 {
 #if VTE_CHECK_VERSION(0, 61, 90)
@@ -3231,4 +3289,99 @@ terminal_screen_update_sixel (TerminalScreen *screen)
                 NULL);
   vte_terminal_set_enable_sixel (VTE_TERMINAL (screen->terminal), enable_sixel);
 #endif
+}
+
+
+
+static void
+terminal_screen_update_file_selection (TerminalScreen *screen)
+{
+  gboolean enabled = TRUE;
+  gboolean double_click_opens = TRUE;
+
+  g_return_if_fail (TERMINAL_IS_SCREEN (screen));
+
+  if (screen->file_selection == NULL)
+    return;
+
+  /* Get preference settings */
+  g_object_get (G_OBJECT (screen->preferences),
+                "misc-file-selection-enabled", &enabled,
+                "misc-file-selection-double-click-opens", &double_click_opens,
+                NULL);
+
+  terminal_file_selection_set_enabled (screen->file_selection, enabled);
+  terminal_file_selection_set_double_click_opens (screen->file_selection, double_click_opens);
+
+  /* Sync colors with theme - use selection colors from preferences */
+  GdkRGBA selection_bg;
+  if (terminal_preferences_get_color (screen->preferences, "color-selection-background", &selection_bg))
+    terminal_file_selection_set_selection_colors (screen->file_selection, NULL, &selection_bg);
+}
+
+
+
+static gboolean
+terminal_screen_file_selection_button_press (GtkWidget *widget,
+                                             GdkEventButton *event,
+                                             TerminalScreen *screen)
+{
+  g_return_val_if_fail (TERMINAL_IS_SCREEN (screen), FALSE);
+
+  if (screen->file_selection == NULL)
+    return FALSE;
+
+  return terminal_file_selection_handle_button_press (screen->file_selection, event);
+}
+
+
+
+static gboolean
+terminal_screen_file_selection_motion (GtkWidget *widget,
+                                       GdkEventMotion *event,
+                                       TerminalScreen *screen)
+{
+  g_return_val_if_fail (TERMINAL_IS_SCREEN (screen), FALSE);
+
+  if (screen->file_selection == NULL)
+    return FALSE;
+
+  return terminal_file_selection_handle_motion (screen->file_selection, event);
+}
+
+
+
+static gboolean
+terminal_screen_file_selection_draw (GtkWidget *widget,
+                                     cairo_t *cr,
+                                     TerminalScreen *screen)
+{
+  gint width, height;
+
+  g_return_val_if_fail (TERMINAL_IS_SCREEN (screen), FALSE);
+
+  if (screen->file_selection == NULL)
+    return FALSE;
+
+  width = gtk_widget_get_allocated_width (widget);
+  height = gtk_widget_get_allocated_height (widget);
+
+  terminal_file_selection_draw (screen->file_selection, cr, width, height);
+
+  return FALSE; /* Allow other handlers to run */
+}
+
+
+
+static void
+terminal_screen_file_selection_activated (TerminalFileSelection *selection,
+                                          const gchar *path,
+                                          TerminalScreen *screen)
+{
+  g_return_if_fail (TERMINAL_IS_FILE_SELECTION (selection));
+  g_return_if_fail (TERMINAL_IS_SCREEN (screen));
+  g_return_if_fail (path != NULL);
+
+  /* Open the file/directory in Thunar */
+  terminal_file_selection_open_selected_in_thunar (selection);
 }
