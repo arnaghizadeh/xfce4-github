@@ -184,6 +184,15 @@ typedef enum _XfcePreviewSize
 #define PREVIEW_SHADOW_SIZE       4
 #define PREVIEW_GROUP_SPACING     10
 
+/* Preview control bar styling */
+#define PREVIEW_CONTROL_BAR_HEIGHT    28
+#define PREVIEW_CONTROL_BUTTON_SIZE   22
+#define PREVIEW_CONTROL_BUTTON_MARGIN 3
+
+/* Data key for storing XfwWindow pointer on control buttons */
+#define PREVIEW_CONTROL_WINDOW_KEY "xfce-preview-control-window"
+#define PREVIEW_CONTROL_TASKLIST_KEY "xfce-preview-control-tasklist"
+
 struct _XfceTasklist
 {
   GtkContainer __parent__;
@@ -2958,6 +2967,256 @@ xfce_tasklist_preview_capture_window (XfceTasklist *tasklist,
   return pixbuf;
 }
 
+/* ---- Preview Control Bar Button Click Handlers ---- */
+
+/* Close button clicked - close the target window */
+static void
+xfce_tasklist_preview_control_close_clicked (GtkButton *button,
+                                              gpointer user_data)
+{
+  XfwWindow *window;
+  XfceTasklist *tasklist;
+
+  window = g_object_get_data (G_OBJECT (button), PREVIEW_CONTROL_WINDOW_KEY);
+  tasklist = g_object_get_data (G_OBJECT (button), PREVIEW_CONTROL_TASKLIST_KEY);
+
+  if (window != NULL && XFW_IS_WINDOW (window))
+    {
+      xfw_window_close (window, gtk_get_current_event_time (), NULL);
+    }
+
+  /* Hide the preview after action */
+  if (tasklist != NULL && tasklist->preview_window != NULL)
+    {
+      tasklist->mouse_in_preview = FALSE;
+      gtk_widget_destroy (tasklist->preview_window);
+      tasklist->preview_window = NULL;
+    }
+}
+
+/* Minimize button clicked - minimize/restore the target window */
+static void
+xfce_tasklist_preview_control_minimize_clicked (GtkButton *button,
+                                                 gpointer user_data)
+{
+  XfwWindow *window;
+  XfceTasklist *tasklist;
+  gboolean is_minimized;
+
+  window = g_object_get_data (G_OBJECT (button), PREVIEW_CONTROL_WINDOW_KEY);
+  tasklist = g_object_get_data (G_OBJECT (button), PREVIEW_CONTROL_TASKLIST_KEY);
+
+  if (window != NULL && XFW_IS_WINDOW (window))
+    {
+      is_minimized = xfw_window_is_minimized (window);
+      xfw_window_set_minimized (window, !is_minimized, NULL);
+    }
+
+  /* Hide the preview after action */
+  if (tasklist != NULL && tasklist->preview_window != NULL)
+    {
+      tasklist->mouse_in_preview = FALSE;
+      gtk_widget_destroy (tasklist->preview_window);
+      tasklist->preview_window = NULL;
+    }
+}
+
+/* Maximize button clicked - maximize the window */
+static void
+xfce_tasklist_preview_control_maximize_clicked (GtkButton *button,
+                                                 gpointer user_data)
+{
+  XfwWindow *window;
+  XfceTasklist *tasklist;
+
+  window = g_object_get_data (G_OBJECT (button), PREVIEW_CONTROL_WINDOW_KEY);
+  tasklist = g_object_get_data (G_OBJECT (button), PREVIEW_CONTROL_TASKLIST_KEY);
+
+  if (window != NULL && XFW_IS_WINDOW (window))
+    {
+      /* Maximize the window */
+      xfw_window_set_maximized (window, TRUE, NULL);
+    }
+
+  /* Hide the preview after action */
+  if (tasklist != NULL && tasklist->preview_window != NULL)
+    {
+      tasklist->mouse_in_preview = FALSE;
+      gtk_widget_destroy (tasklist->preview_window);
+      tasklist->preview_window = NULL;
+    }
+}
+
+/* Button enter event - add hover styling */
+static gboolean
+xfce_tasklist_preview_control_button_enter (GtkWidget *widget,
+                                             GdkEventCrossing *event,
+                                             gpointer user_data)
+{
+  GtkStyleContext *context = gtk_widget_get_style_context (widget);
+  gtk_style_context_add_class (context, "hover");
+  return FALSE;
+}
+
+/* Button leave event - remove hover styling */
+static gboolean
+xfce_tasklist_preview_control_button_leave (GtkWidget *widget,
+                                             GdkEventCrossing *event,
+                                             gpointer user_data)
+{
+  GtkStyleContext *context = gtk_widget_get_style_context (widget);
+  gtk_style_context_remove_class (context, "hover");
+  return FALSE;
+}
+
+/* Create a single control button with icon and styling */
+static GtkWidget *
+xfce_tasklist_preview_create_control_button (XfceTasklist *tasklist,
+                                              XfwWindow *window,
+                                              const gchar *icon_name,
+                                              const gchar *tooltip,
+                                              const gchar *css_class,
+                                              GCallback click_callback)
+{
+  GtkWidget *button;
+  GtkWidget *image;
+  GtkStyleContext *context;
+
+  button = gtk_button_new ();
+  gtk_widget_set_can_focus (button, FALSE);
+  gtk_button_set_relief (GTK_BUTTON (button), GTK_RELIEF_NONE);
+  gtk_widget_set_size_request (button, PREVIEW_CONTROL_BUTTON_SIZE, PREVIEW_CONTROL_BUTTON_SIZE);
+  gtk_widget_set_tooltip_text (button, tooltip);
+
+  /* Store the window and tasklist references on the button */
+  g_object_set_data (G_OBJECT (button), PREVIEW_CONTROL_WINDOW_KEY, window);
+  g_object_set_data (G_OBJECT (button), PREVIEW_CONTROL_TASKLIST_KEY, tasklist);
+
+  /* Add icon */
+  image = gtk_image_new_from_icon_name (icon_name, GTK_ICON_SIZE_MENU);
+  gtk_container_add (GTK_CONTAINER (button), image);
+
+  /* Apply CSS styling */
+  context = gtk_widget_get_style_context (button);
+  gtk_style_context_add_class (context, "preview-control-button");
+  gtk_style_context_add_class (context, css_class);
+
+  /* Connect click handler */
+  g_signal_connect (button, "clicked", click_callback, NULL);
+
+  /* Connect hover events for visual feedback */
+  gtk_widget_add_events (button, GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK);
+  g_signal_connect (button, "enter-notify-event",
+                    G_CALLBACK (xfce_tasklist_preview_control_button_enter), NULL);
+  g_signal_connect (button, "leave-notify-event",
+                    G_CALLBACK (xfce_tasklist_preview_control_button_leave), NULL);
+
+  return button;
+}
+
+/* Create the control bar widget with minimize, maximize, close buttons */
+static GtkWidget *
+xfce_tasklist_preview_create_control_bar (XfceTasklist *tasklist,
+                                           XfwWindow *window)
+{
+  GtkWidget *hbox;
+  GtkWidget *minimize_button;
+  GtkWidget *maximize_button;
+  GtkWidget *close_button;
+  GtkStyleContext *context;
+  GtkCssProvider *css_provider;
+  GError *error = NULL;
+
+  /* CSS for control buttons */
+  static const gchar *control_button_css =
+    ".preview-control-button {"
+    "  padding: 2px;"
+    "  margin: 1px;"
+    "  border-radius: 4px;"
+    "  background-color: alpha(@theme_fg_color, 0.1);"
+    "  transition: background-color 150ms ease-in-out;"
+    "}"
+    ".preview-control-button:hover {"
+    "  background-color: alpha(@theme_fg_color, 0.25);"
+    "}"
+    ".preview-control-button:active {"
+    "  background-color: alpha(@theme_fg_color, 0.35);"
+    "}"
+    ".preview-control-button.hover {"
+    "  background-color: alpha(@theme_fg_color, 0.25);"
+    "}"
+    ".preview-control-close:hover {"
+    "  background-color: alpha(#e74c3c, 0.8);"
+    "  color: white;"
+    "}"
+    ".preview-control-close:active {"
+    "  background-color: alpha(#c0392b, 0.9);"
+    "}"
+    ".preview-control-bar {"
+    "  padding: 2px 4px;"
+    "  border-radius: 4px 4px 0 0;"
+    "  background-color: alpha(@theme_bg_color, 0.3);"
+    "}";
+
+  panel_return_val_if_fail (XFCE_IS_TASKLIST (tasklist), NULL);
+  panel_return_val_if_fail (XFW_IS_WINDOW (window), NULL);
+
+  /* Create horizontal box for control buttons */
+  hbox = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 2);
+  gtk_widget_set_halign (hbox, GTK_ALIGN_END);
+  gtk_widget_set_valign (hbox, GTK_ALIGN_CENTER);
+  gtk_widget_set_margin_end (hbox, PREVIEW_CONTROL_BUTTON_MARGIN);
+
+  /* Apply CSS to control bar */
+  context = gtk_widget_get_style_context (hbox);
+  gtk_style_context_add_class (context, "preview-control-bar");
+
+  /* Load CSS provider for styling */
+  css_provider = gtk_css_provider_new ();
+  if (gtk_css_provider_load_from_data (css_provider, control_button_css, -1, &error))
+    {
+      gtk_style_context_add_provider_for_screen (
+        gtk_widget_get_screen (GTK_WIDGET (tasklist)),
+        GTK_STYLE_PROVIDER (css_provider),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    }
+  else
+    {
+      g_warning ("Failed to load preview control button CSS: %s", error->message);
+      g_clear_error (&error);
+    }
+  g_object_unref (css_provider);
+
+  /* Create minimize button */
+  minimize_button = xfce_tasklist_preview_create_control_button (
+    tasklist, window,
+    "window-minimize-symbolic",
+    _("Minimize"),
+    "preview-control-minimize",
+    G_CALLBACK (xfce_tasklist_preview_control_minimize_clicked));
+  gtk_box_pack_start (GTK_BOX (hbox), minimize_button, FALSE, FALSE, 0);
+
+  /* Create maximize button - always show maximize icon */
+  maximize_button = xfce_tasklist_preview_create_control_button (
+    tasklist, window,
+    "window-maximize-symbolic",
+    _("Maximize"),
+    "preview-control-maximize",
+    G_CALLBACK (xfce_tasklist_preview_control_maximize_clicked));
+  gtk_box_pack_start (GTK_BOX (hbox), maximize_button, FALSE, FALSE, 0);
+
+  /* Create close button */
+  close_button = xfce_tasklist_preview_create_control_button (
+    tasklist, window,
+    "window-close-symbolic",
+    _("Close"),
+    "preview-control-close",
+    G_CALLBACK (xfce_tasklist_preview_control_close_clicked));
+  gtk_box_pack_start (GTK_BOX (hbox), close_button, FALSE, FALSE, 0);
+
+  return hbox;
+}
+
 /* Draw custom preview frame with rounded corners */
 static gboolean
 xfce_tasklist_preview_draw (GtkWidget *widget,
@@ -3055,10 +3314,13 @@ xfce_tasklist_preview_create_frame (XfceTasklist *tasklist,
                                      GdkPixbuf *pixbuf)
 {
   GtkWidget *vbox;
-  GtkWidget *image;
+  GtkWidget *header_box;
   GtkWidget *title_label;
+  GtkWidget *control_bar;
+  GtkWidget *image;
   const gchar *title;
   gint target_width, target_height;
+  gint header_title_width;
 
   panel_return_val_if_fail (XFCE_IS_TASKLIST (tasklist), NULL);
   panel_return_val_if_fail (XFW_IS_WINDOW (window), NULL);
@@ -3071,30 +3333,47 @@ xfce_tasklist_preview_create_frame (XfceTasklist *tasklist,
   gtk_widget_set_margin_top (vbox, PREVIEW_PADDING);
   gtk_widget_set_margin_bottom (vbox, PREVIEW_PADDING);
 
-  /* Add title label at top if enabled */
-  if (tasklist->show_preview_title)
-    {
-      title = xfw_window_get_name (window);
-      if (title == NULL || *title == '\0')
-        title = _("Unknown Window");
+  /* Create header box containing title and control bar */
+  header_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
+  gtk_widget_set_size_request (header_box, target_width, PREVIEW_CONTROL_BAR_HEIGHT);
+  gtk_box_pack_start (GTK_BOX (vbox), header_box, FALSE, FALSE, 0);
 
-      title_label = gtk_label_new (title);
-      gtk_label_set_ellipsize (GTK_LABEL (title_label), PANGO_ELLIPSIZE_END);
-      gtk_label_set_max_width_chars (GTK_LABEL (title_label), 30);
-      gtk_widget_set_halign (title_label, GTK_ALIGN_CENTER);
-      gtk_widget_set_size_request (title_label, target_width, PREVIEW_TITLE_HEIGHT);
+  /* Add title label on the left side of header */
+  title = xfw_window_get_name (window);
+  if (title == NULL || *title == '\0')
+    title = _("Unknown Window");
 
-      /* Style the title */
-      GtkStyleContext *context = gtk_widget_get_style_context (title_label);
-      gtk_style_context_add_class (context, "preview-title");
+  /* Calculate title width: leave room for 3 control buttons */
+  header_title_width = target_width - (PREVIEW_CONTROL_BUTTON_SIZE * 3) - 16;
+  if (header_title_width < 50)
+    header_title_width = 50;
 
-      PangoAttrList *attrs = pango_attr_list_new ();
-      pango_attr_list_insert (attrs, pango_attr_weight_new (PANGO_WEIGHT_MEDIUM));
-      gtk_label_set_attributes (GTK_LABEL (title_label), attrs);
-      pango_attr_list_unref (attrs);
+  title_label = gtk_label_new (title);
+  gtk_label_set_ellipsize (GTK_LABEL (title_label), PANGO_ELLIPSIZE_END);
+  gtk_label_set_max_width_chars (GTK_LABEL (title_label), 20);
+  gtk_widget_set_halign (title_label, GTK_ALIGN_START);
+  gtk_widget_set_valign (title_label, GTK_ALIGN_CENTER);
+  gtk_widget_set_size_request (title_label, header_title_width, -1);
+  gtk_widget_set_hexpand (title_label, TRUE);
 
-      gtk_box_pack_start (GTK_BOX (vbox), title_label, FALSE, FALSE, 0);
-    }
+  /* Style the title */
+  {
+    GtkStyleContext *context = gtk_widget_get_style_context (title_label);
+    gtk_style_context_add_class (context, "preview-title");
+
+    PangoAttrList *attrs = pango_attr_list_new ();
+    pango_attr_list_insert (attrs, pango_attr_weight_new (PANGO_WEIGHT_MEDIUM));
+    gtk_label_set_attributes (GTK_LABEL (title_label), attrs);
+    pango_attr_list_unref (attrs);
+  }
+
+  gtk_box_pack_start (GTK_BOX (header_box), title_label, TRUE, TRUE, 0);
+
+  /* Add control bar on the right side of header */
+  control_bar = xfce_tasklist_preview_create_control_bar (tasklist, window);
+  gtk_widget_set_halign (control_bar, GTK_ALIGN_END);
+  gtk_widget_set_valign (control_bar, GTK_ALIGN_CENTER);
+  gtk_box_pack_end (GTK_BOX (header_box), control_bar, FALSE, FALSE, 0);
 
   /* Add the preview image */
   if (pixbuf != NULL)
@@ -3181,8 +3460,8 @@ xfce_tasklist_preview_show (XfceTasklist *tasklist,
   /* Calculate total size */
   total_width = target_width + (PREVIEW_PADDING * 2);
   total_height = target_height + (PREVIEW_PADDING * 2);
-  if (tasklist->show_preview_title)
-    total_height += PREVIEW_TITLE_HEIGHT + 4;
+  /* Always include header height (control bar + title) */
+  total_height += PREVIEW_CONTROL_BAR_HEIGHT + 4;
 
   /* Get button position */
   gtk_widget_get_allocation (child->button, &btn_alloc);
@@ -3313,8 +3592,8 @@ xfce_tasklist_preview_show_group (XfceTasklist *tasklist,
   /* Calculate total size */
   gint single_width = target_width + (PREVIEW_PADDING * 2);
   gint single_height = target_height + (PREVIEW_PADDING * 2);
-  if (tasklist->show_preview_title)
-    single_height += PREVIEW_TITLE_HEIGHT + 4;
+  /* Always include header height (control bar + title) */
+  single_height += PREVIEW_CONTROL_BAR_HEIGHT + 4;
 
   /* Limit to max 4 previews in a row to prevent overflow */
   gint max_previews = MIN (n_windows, 4);
@@ -5049,7 +5328,7 @@ xfce_tasklist_group_button_button_draw (GtkWidget *widget,
 
       /* Draw the background circle */
       cairo_move_to (cr, x, y);
-      cairo_arc (cr, x, y, radius, 0.0, 2 * M_PI);
+      cairo_arc (cr, x, y, radius, 0.0, 2 * G_PI);
       cairo_close_path (cr);
       cairo_set_line_width (cr, 1.0);
       cairo_set_source_rgba (cr, bg.red, bg.green, bg.blue, fg.alpha);
