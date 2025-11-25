@@ -588,7 +588,7 @@ xfce_tasklist_class_init (XfceTasklistClass *klass)
                                    g_param_spec_int ("button-spacing",
                                                      NULL, NULL,
                                                      0, 32,
-                                                     4, /* default: 4px spacing between buttons */
+                                                     2, /* default: 2px spacing between buttons */
                                                      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   gtk_widget_class_install_style_property (gtkwidget_class,
@@ -1194,7 +1194,8 @@ xfce_tasklist_size_layout (XfceTasklist  *tasklist,
         child->type = CHILD_TYPE_WINDOW;
     }
 
-  if (min_button_length * cols <= alloc->width)
+  /* account for spacing between buttons (cols-1 gaps) */
+  if (min_button_length * cols + tasklist->button_spacing * (cols > 0 ? cols - 1 : 0) <= alloc->width)
     {
       /* all the windows seem to fit */
       *n_rows = rows;
@@ -1373,8 +1374,17 @@ xfce_tasklist_size_allocate (GtkWidget     *widget,
                   w = h;
                 }
 
-              area_width -= w + tasklist->button_spacing;
-              area_x += w + tasklist->button_spacing;
+              /* only add spacing if there are more columns */
+              if (cols > 0)
+                {
+                  area_width -= w + tasklist->button_spacing;
+                  area_x += w + tasklist->button_spacing;
+                }
+              else
+                {
+                  area_width -= w;
+                  area_x += w;
+                }
             }
 
           child_alloc.y = y;
