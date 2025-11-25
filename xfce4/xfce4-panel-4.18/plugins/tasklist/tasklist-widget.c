@@ -96,7 +96,8 @@ enum
   PROP_INCLUDE_ALL_BLINKING,
   PROP_MIDDLE_CLICK,
   PROP_LABEL_DECORATIONS,
-  PROP_SHOW_WINDOW_PREVIEWS
+  PROP_SHOW_WINDOW_PREVIEWS,
+  PROP_ICON_SIZE
 };
 
 /* window preview constants */
@@ -218,6 +219,9 @@ struct _XfceTasklist
   XfcePreviewSize       preview_size;
   GtkWidget            *preview_window;
   guint                 preview_timeout_id;
+
+  /* custom icon size for tasklist buttons (0 = use panel default) */
+  gint                  icon_size;
 
   /* gtk style properties */
   gint                  max_button_length;
@@ -567,6 +571,14 @@ xfce_tasklist_class_init (XfceTasklistClass *klass)
                                                          FALSE,
                                                          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  g_object_class_install_property (gobject_class,
+                                   PROP_ICON_SIZE,
+                                   g_param_spec_int ("icon-size",
+                                                     NULL, NULL,
+                                                     0, 128,
+                                                     32, /* default: 32px icons, bigger than panel default */
+                                                     G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   gtk_widget_class_install_style_property (gtkwidget_class,
                                            g_param_spec_int ("max-button-length",
                                                              NULL,
@@ -826,6 +838,10 @@ xfce_tasklist_get_property (GObject    *object,
       g_value_set_boolean (value, tasklist->show_window_previews);
       break;
 
+    case PROP_ICON_SIZE:
+      g_value_set_int (value, tasklist->icon_size);
+      break;
+
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -918,6 +934,11 @@ xfce_tasklist_set_property (GObject      *object,
 
     case PROP_SHOW_WINDOW_PREVIEWS:
       tasklist->show_window_previews = g_value_get_boolean (value);
+      break;
+
+    case PROP_ICON_SIZE:
+      tasklist->icon_size = g_value_get_int (value);
+      gtk_widget_queue_resize (GTK_WIDGET (tasklist));
       break;
 
     default:
@@ -3557,7 +3578,9 @@ xfce_tasklist_button_icon_changed (WnckWindow        *window,
   if (tasklist->minimized_icon_lucency == 0)
     return;
 
-  icon_size = xfce_panel_plugin_get_icon_size (xfce_tasklist_get_panel_plugin (tasklist));
+  /* use custom icon size if set, otherwise use panel default */
+  icon_size = tasklist->icon_size > 0 ? tasklist->icon_size
+              : xfce_panel_plugin_get_icon_size (xfce_tasklist_get_panel_plugin (tasklist));
   scale_factor = gtk_widget_get_scale_factor (GTK_WIDGET (child->tasklist));
   context = gtk_widget_get_style_context (GTK_WIDGET (child->icon));
 
@@ -4826,7 +4849,9 @@ xfce_tasklist_group_button_button_draw (GtkWidget         *widget,
         }
 
       pango_layout_get_pixel_extents (n_windows_layout, &ink_extent, &log_extent);
-      icon_size = xfce_panel_plugin_get_icon_size (xfce_tasklist_get_panel_plugin (group_child->tasklist));
+      /* use custom icon size if set, otherwise use panel default */
+      icon_size = group_child->tasklist->icon_size > 0 ? group_child->tasklist->icon_size
+                  : xfce_panel_plugin_get_icon_size (xfce_tasklist_get_panel_plugin (group_child->tasklist));
       radius = log_extent.height / 2;
       if (group_child->tasklist->show_labels || icon_size < WNCK_DEFAULT_ICON_SIZE)
         {
@@ -5056,7 +5081,9 @@ xfce_tasklist_group_button_icon_changed (WnckClassGroup    *class_group,
   if (group_child->tasklist->minimized_icon_lucency == 0)
     return;
 
-  icon_size = xfce_panel_plugin_get_icon_size (xfce_tasklist_get_panel_plugin (group_child->tasklist));
+  /* use custom icon size if set, otherwise use panel default */
+  icon_size = group_child->tasklist->icon_size > 0 ? group_child->tasklist->icon_size
+              : xfce_panel_plugin_get_icon_size (xfce_tasklist_get_panel_plugin (group_child->tasklist));
   scale_factor = gtk_widget_get_scale_factor (GTK_WIDGET (group_child->tasklist));
   context = gtk_widget_get_style_context (GTK_WIDGET (group_child->icon));
 
