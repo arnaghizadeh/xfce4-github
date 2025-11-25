@@ -3024,6 +3024,37 @@ xfce_tasklist_preview_image_clicked (GtkWidget *widget,
   return TRUE;
 }
 
+/* Hover handlers for preview image - visual highlight effect */
+static gboolean
+xfce_tasklist_preview_image_enter (GtkWidget *widget,
+                                    GdkEventCrossing *event,
+                                    gpointer user_data)
+{
+  GtkWidget *frame = GTK_WIDGET (user_data);
+
+  if (event->type == GDK_ENTER_NOTIFY && frame != NULL)
+    {
+      gtk_widget_set_opacity (frame, 0.7);
+    }
+
+  return FALSE;
+}
+
+static gboolean
+xfce_tasklist_preview_image_leave (GtkWidget *widget,
+                                    GdkEventCrossing *event,
+                                    gpointer user_data)
+{
+  GtkWidget *frame = GTK_WIDGET (user_data);
+
+  if (event->type == GDK_LEAVE_NOTIFY && frame != NULL)
+    {
+      gtk_widget_set_opacity (frame, 1.0);
+    }
+
+  return FALSE;
+}
+
 static void
 xfce_tasklist_preview_control_maximize_clicked (GtkButton *button,
                                                  gpointer user_data)
@@ -3260,10 +3291,10 @@ xfce_tasklist_preview_create_frame (XfceTasklist *tasklist,
   gtk_widget_set_margin_top (outer_box, 6);
   gtk_widget_set_margin_bottom (outer_box, 6);
 
-  /* Event box to capture clicks on the preview image */
+  /* Event box to capture clicks and hover on the preview image */
   image_event_box = gtk_event_box_new ();
   gtk_event_box_set_above_child (GTK_EVENT_BOX (image_event_box), FALSE);
-  gtk_widget_add_events (image_event_box, GDK_BUTTON_PRESS_MASK);
+  gtk_widget_add_events (image_event_box, GDK_BUTTON_PRESS_MASK | GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK);
   g_object_set_data (G_OBJECT (image_event_box), PREVIEW_CONTROL_WINDOW_KEY, window);
   g_object_set_data (G_OBJECT (image_event_box), PREVIEW_CONTROL_TASKLIST_KEY, tasklist);
   g_signal_connect (image_event_box, "button-press-event",
@@ -3274,6 +3305,12 @@ xfce_tasklist_preview_create_frame (XfceTasklist *tasklist,
   image_frame = gtk_frame_new (NULL);
   gtk_frame_set_shadow_type (GTK_FRAME (image_frame), GTK_SHADOW_OUT);
   gtk_container_add (GTK_CONTAINER (image_event_box), image_frame);
+
+  /* Connect hover signals after frame is created (pass frame as user_data) */
+  g_signal_connect (image_event_box, "enter-notify-event",
+                    G_CALLBACK (xfce_tasklist_preview_image_enter), image_frame);
+  g_signal_connect (image_event_box, "leave-notify-event",
+                    G_CALLBACK (xfce_tasklist_preview_image_leave), image_frame);
 
   overlay = gtk_overlay_new ();
   gtk_container_add (GTK_CONTAINER (image_frame), overlay);
