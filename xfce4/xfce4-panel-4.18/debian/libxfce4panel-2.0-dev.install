@@ -1,0 +1,5 @@
+usr/include/xfce4/libxfce4panel-2.0
+usr/lib/*/libxfce4panel-2.0.so
+usr/lib/*/pkgconfig/libxfce4panel-2.0.pc
+usr/share/gtk-doc/html/libxfce4panel-2.0
+usr/share/gir-1.0/*

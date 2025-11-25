@@ -1,0 +1,67 @@
+Source: xfce4-panel
+Section: xfce
+Priority: optional
+Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+XSBC-Original-Maintainer: Debian Xfce Maintainers <debian-xfce@lists.debian.org>
+Uploaders: Yves-Alexis Perez <corsac@debian.org>
+Build-Depends: debhelper-compat (= 13),
+               gobject-introspection,
+               gtk-doc-tools,
+               intltool,
+               libgirepository1.0-dev,
+               libcairo2-dev,
+               libdbusmenu-gtk3-dev,
+               libexo-2-dev,
+               libgarcon-1-dev (>= 4.17.0),
+               libgarcon-gtk3-1-dev (>= 4.17.0),
+               libglib2.0-dev,
+               libgtk-3-dev,
+               libwnck-3-dev,
+               libxfce4ui-2-dev (>= 4.17.1),
+               libxfce4util-dev (>= 4.17.2),
+               libxfconf-0-dev,
+               xfce4-dev-tools
+Rules-Requires-Root: no
+Standards-Version: 4.6.2
+Homepage: https://docs.xfce.org/xfce/xfce4-panel/start
+Vcs-Git: https://salsa.debian.org/xfce-team/desktop/xfce4-panel.git
+Vcs-Browser: https://salsa.debian.org/xfce-team/desktop/xfce4-panel
+
+Package: xfce4-panel
+Architecture: any
+Pre-Depends: ${misc:Pre-Depends}
+Depends: exo-utils, ${misc:Depends}, ${shlibs:Depends}
+Description: panel for Xfce4 desktop environment
+ This is the panel provided by the Xfce4 desktop project.  If you want a
+ multi-functional panel that can even handle plugins and the like, xfce4-panel
+ might be worth a try.
+
+Package: libxfce4panel-2.0-4
+Section: libs
+Architecture: any
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Description: Xfce4 panel library (GTK3 variant)
+ This package contains the GTK3 variant of the panel library, used by the
+ various plugins for the Xfce panel.
+
+Package: libxfce4panel-2.0-dev
+Section: libdevel
+Architecture: any
+Depends: gir1.2-libxfce4panel-2.0 (= ${binary:Version}),
+         libglib2.0-dev,
+         libgtk-3-dev,
+         libxfce4panel-2.0-4 (= ${binary:Version}),
+         libxfce4util-dev,
+         ${misc:Depends}
+Description: Xfce4 panel library (development files for GTK3 variant)
+ This package contains development files for the library (GTK3 variant) used by
+ various plugins for the Xfce panel.
+
+Package: gir1.2-libxfce4panel-2.0
+Section: introspection
+Architecture: any
+Pre-Depends: ${misc:Pre-Depends}
+Depends: ${gir:Depends}, ${misc:Depends}
+Description: Xfce4 panel library (introspection data)
+ This package contains introspection data for the library (GTK3 variant) used by
+ various plugins for the Xfce panel.
