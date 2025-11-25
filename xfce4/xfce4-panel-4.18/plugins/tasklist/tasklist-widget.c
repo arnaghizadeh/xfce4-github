@@ -283,6 +283,9 @@ struct _XfceTasklistChild
   /* wnck information */
   WnckWindow             *window;
   WnckClassGroup         *class_group;
+
+  /* cached preview image for minimized windows */
+  GdkPixbuf              *minimized_preview;
 };
 
 static const GtkTargetEntry source_targets[] =
@@ -1627,6 +1630,12 @@ xfce_tasklist_scroll_event (GtkWidget      *widget,
 static gboolean
 xfce_tasklist_free_child (gpointer data)
 {
+  XfceTasklistChild *child = data;
+
+  /* Free cached minimized preview if present */
+  if (child->minimized_preview != NULL)
+    g_object_unref (child->minimized_preview);
+
   g_slice_free (XfceTasklistChild, data);
   return FALSE;
 }
@@ -2738,22 +2747,92 @@ xfce_tasklist_preview_create_fallback (XfceTasklist *tasklist,
   return pixbuf;
 }
 
+/* Add "MINIMIZED" text overlay to a pixbuf */
+static GdkPixbuf *
+xfce_tasklist_preview_add_minimized_overlay (GdkPixbuf *src_pixbuf)
+{
+  cairo_surface_t *surface;
+  cairo_t *cr;
+  GdkPixbuf *result;
+  gint width, height;
+  cairo_text_extents_t extents;
+  const gchar *text = "MINIMIZED";
+
+  if (src_pixbuf == NULL)
+    return NULL;
+
+  width = gdk_pixbuf_get_width (src_pixbuf);
+  height = gdk_pixbuf_get_height (src_pixbuf);
+
+  /* Create a cairo surface from the pixbuf */
+  surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, width, height);
+  cr = cairo_create (surface);
+
+  /* Draw the source pixbuf */
+  gdk_cairo_set_source_pixbuf (cr, src_pixbuf, 0, 0);
+  cairo_paint (cr);
+
+  /* Add semi-transparent dark overlay */
+  cairo_set_source_rgba (cr, 0, 0, 0, 0.5);
+  cairo_rectangle (cr, 0, 0, width, height);
+  cairo_fill (cr);
+
+  /* Draw "MINIMIZED" text in the center */
+  cairo_select_font_face (cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+  cairo_set_font_size (cr, 14.0);
+  cairo_text_extents (cr, text, &extents);
+
+  /* Center the text */
+  cairo_move_to (cr, (width - extents.width) / 2 - extents.x_bearing,
+                     (height - extents.height) / 2 - extents.y_bearing);
+
+  /* Draw text shadow */
+  cairo_set_source_rgba (cr, 0, 0, 0, 0.8);
+  cairo_show_text (cr, text);
+
+  /* Draw text */
+  cairo_move_to (cr, (width - extents.width) / 2 - extents.x_bearing - 1,
+                     (height - extents.height) / 2 - extents.y_bearing - 1);
+  cairo_set_source_rgba (cr, 1, 1, 1, 0.9);
+  cairo_show_text (cr, text);
+
+  cairo_destroy (cr);
+
+  /* Convert surface back to pixbuf */
+  result = gdk_pixbuf_get_from_surface (surface, 0, 0, width, height);
+  cairo_surface_destroy (surface);
+
+  return result;
+}
+
 /* Capture window contents as a pixbuf */
 static GdkPixbuf *
 xfce_tasklist_preview_capture_window (XfceTasklist *tasklist,
-                                       WnckWindow *window)
+                                       XfceTasklistChild *child)
 {
   GdkPixbuf *pixbuf = NULL;
   gint target_width, target_height;
   gboolean is_minimized;
+  WnckWindow *window;
 
   panel_return_val_if_fail (XFCE_IS_TASKLIST (tasklist), NULL);
-  panel_return_val_if_fail (WNCK_IS_WINDOW (window), NULL);
+  panel_return_val_if_fail (child != NULL, NULL);
+  panel_return_val_if_fail (WNCK_IS_WINDOW (child->window), NULL);
 
+  window = child->window;
   xfce_tasklist_preview_get_size (tasklist, &target_width, &target_height);
 
   /* Check if window is minimized */
   is_minimized = wnck_window_is_minimized (window);
+
+  /* If minimized, use cached preview if available */
+  if (is_minimized && child->minimized_preview != NULL)
+    {
+      GdkPixbuf *overlay_pixbuf = xfce_tasklist_preview_add_minimized_overlay (child->minimized_preview);
+      if (overlay_pixbuf != NULL)
+        return overlay_pixbuf;
+      /* Fall through if overlay failed */
+    }
 
 #ifdef GDK_WINDOWING_X11
   {
@@ -2811,6 +2890,11 @@ xfce_tasklist_preview_capture_window (XfceTasklist *tasklist,
                               GDK_INTERP_BILINEAR);
 
             g_object_unref (raw_pixbuf);
+
+            /* Cache this preview for when window is minimized */
+            if (child->minimized_preview != NULL)
+              g_object_unref (child->minimized_preview);
+            child->minimized_preview = gdk_pixbuf_copy (pixbuf);
           }
         else
           {
@@ -2823,7 +2907,18 @@ xfce_tasklist_preview_capture_window (XfceTasklist *tasklist,
       {
         if (gdkwindow != NULL)
           g_object_unref (gdkwindow);
-        pixbuf = xfce_tasklist_preview_create_fallback (tasklist, window);
+
+        /* For minimized windows without cached preview, use fallback with overlay */
+        if (is_minimized)
+          {
+            GdkPixbuf *fallback = xfce_tasklist_preview_create_fallback (tasklist, window);
+            pixbuf = xfce_tasklist_preview_add_minimized_overlay (fallback);
+            g_object_unref (fallback);
+          }
+        else
+          {
+            pixbuf = xfce_tasklist_preview_create_fallback (tasklist, window);
+          }
       }
   }
 #endif
@@ -2831,7 +2926,16 @@ xfce_tasklist_preview_capture_window (XfceTasklist *tasklist,
   /* Fallback: use icon-based placeholder */
   if (pixbuf == NULL)
     {
-      pixbuf = xfce_tasklist_preview_create_fallback (tasklist, window);
+      GdkPixbuf *fallback = xfce_tasklist_preview_create_fallback (tasklist, window);
+      if (is_minimized)
+        {
+          pixbuf = xfce_tasklist_preview_add_minimized_overlay (fallback);
+          g_object_unref (fallback);
+        }
+      else
+        {
+          pixbuf = fallback;
+        }
     }
 
   return pixbuf;
@@ -3206,7 +3310,7 @@ xfce_tasklist_preview_show (XfceTasklist *tasklist,
   if (!gtk_widget_get_realized (child->button))
     return;
 
-  pixbuf = xfce_tasklist_preview_capture_window (tasklist, child->window);
+  pixbuf = xfce_tasklist_preview_capture_window (tasklist, child);
   if (pixbuf == NULL)
     return;
 
@@ -3337,7 +3441,7 @@ xfce_tasklist_preview_show_group (XfceTasklist *tasklist,
       if (!WNCK_IS_WINDOW (window_child->window))
         continue;
 
-      pixbuf = xfce_tasklist_preview_capture_window (tasklist, window_child->window);
+      pixbuf = xfce_tasklist_preview_capture_window (tasklist, window_child);
       if (pixbuf == NULL)
         continue;
 
