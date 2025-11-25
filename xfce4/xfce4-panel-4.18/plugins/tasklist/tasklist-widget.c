@@ -1110,11 +1110,11 @@ xfce_tasklist_get_preferred_length (GtkWidget *widget,
         cols++;
 
       if (!tasklist->show_labels)
-        length = (tasklist->size / rows) * cols;
+        length = (tasklist->size / rows) * cols + tasklist->button_spacing * (cols > 0 ? cols - 1 : 0);
       else if (tasklist->max_button_length != -1)
-        length = cols * tasklist->max_button_length;
+        length = cols * tasklist->max_button_length + tasklist->button_spacing * (cols > 0 ? cols - 1 : 0);
       else
-        length = cols * DEFAULT_MAX_BUTTON_LENGTH;
+        length = cols * DEFAULT_MAX_BUTTON_LENGTH + tasklist->button_spacing * (cols > 0 ? cols - 1 : 0);
     }
 
   if (xfce_tasklist_deskbar (tasklist) && tasklist->show_labels)
@@ -1194,8 +1194,15 @@ xfce_tasklist_size_layout (XfceTasklist  *tasklist,
         child->type = CHILD_TYPE_WINDOW;
     }
 
-  /* account for spacing between buttons (cols-1 gaps) */
-  if (min_button_length * cols + tasklist->button_spacing * (cols > 0 ? cols - 1 : 0) <= alloc->width)
+  /* Calculate how many columns can actually fit in the available width, accounting for spacing */
+  gint max_cols_that_fit;
+  if (tasklist->button_spacing > 0)
+    max_cols_that_fit = (alloc->width + tasklist->button_spacing) / (min_button_length + tasklist->button_spacing);
+  else
+    max_cols_that_fit = alloc->width / min_button_length;
+
+  /* Check if all windows fit without overflow */
+  if (cols <= max_cols_that_fit)
     {
       /* all the windows seem to fit */
       *n_rows = rows;
@@ -1224,13 +1231,15 @@ xfce_tasklist_size_layout (XfceTasklist  *tasklist,
         max_button_length = DEFAULT_MAX_BUTTON_LENGTH;
 
       n_buttons = tasklist->n_windows;
-      /* Matches the existing behavior (with a bug fix) */
-      /* n_buttons_target = MIN ((alloc->width - ARROW_BUTTON_SIZE) / min_button_length * rows,          *
-       *                         (((alloc->width - ARROW_BUTTON_SIZE) / max_button_length) + 1) * rows); */
 
-      /* Perhaps a better behavior (tries to display more buttons on the panel, */
-      /* yet still within the specified limits) */
-      n_buttons_target = (alloc->width - ARROW_BUTTON_SIZE) / min_button_length * rows;
+      /* Calculate target buttons accounting for arrow button space */
+      gint available_for_buttons = alloc->width - ARROW_BUTTON_SIZE;
+      gint cols_for_target;
+      if (tasklist->button_spacing > 0)
+        cols_for_target = (available_for_buttons + tasklist->button_spacing) / (min_button_length + tasklist->button_spacing);
+      else
+        cols_for_target = available_for_buttons / min_button_length;
+      n_buttons_target = cols_for_target * rows;
 
       /* we now push the windows with the lowest score in the
        * overflow menu */
