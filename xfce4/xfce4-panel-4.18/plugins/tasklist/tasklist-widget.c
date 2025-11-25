@@ -97,7 +97,8 @@ enum
   PROP_MIDDLE_CLICK,
   PROP_LABEL_DECORATIONS,
   PROP_SHOW_WINDOW_PREVIEWS,
-  PROP_ICON_SIZE
+  PROP_ICON_SIZE,
+  PROP_BUTTON_SPACING
 };
 
 /* window preview constants */
@@ -222,6 +223,9 @@ struct _XfceTasklist
 
   /* custom icon size for tasklist buttons (0 = use panel default) */
   gint                  icon_size;
+
+  /* spacing between tasklist buttons */
+  gint                  button_spacing;
 
   /* gtk style properties */
   gint                  max_button_length;
@@ -579,6 +583,14 @@ xfce_tasklist_class_init (XfceTasklistClass *klass)
                                                      32, /* default: 32px icons, bigger than panel default */
                                                      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  g_object_class_install_property (gobject_class,
+                                   PROP_BUTTON_SPACING,
+                                   g_param_spec_int ("button-spacing",
+                                                     NULL, NULL,
+                                                     0, 32,
+                                                     4, /* default: 4px spacing between buttons */
+                                                     G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   gtk_widget_class_install_style_property (gtkwidget_class,
                                            g_param_spec_int ("max-button-length",
                                                              NULL,
@@ -842,6 +854,10 @@ xfce_tasklist_get_property (GObject    *object,
       g_value_set_int (value, tasklist->icon_size);
       break;
 
+    case PROP_BUTTON_SPACING:
+      g_value_set_int (value, tasklist->button_spacing);
+      break;
+
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -938,6 +954,11 @@ xfce_tasklist_set_property (GObject      *object,
 
     case PROP_ICON_SIZE:
       tasklist->icon_size = g_value_get_int (value);
+      gtk_widget_queue_resize (GTK_WIDGET (tasklist));
+      break;
+
+    case PROP_BUTTON_SPACING:
+      tasklist->button_spacing = g_value_get_int (value);
       gtk_widget_queue_resize (GTK_WIDGET (tasklist));
       break;
 
@@ -1352,8 +1373,8 @@ xfce_tasklist_size_allocate (GtkWidget     *widget,
                   w = h;
                 }
 
-              area_width -= w;
-              area_x += w;
+              area_width -= w + tasklist->button_spacing;
+              area_x += w + tasklist->button_spacing;
             }
 
           child_alloc.y = y;

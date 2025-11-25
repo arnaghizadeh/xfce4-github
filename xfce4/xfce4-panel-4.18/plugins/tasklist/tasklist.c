@@ -154,6 +154,7 @@ tasklist_plugin_construct (XfcePanelPlugin *panel_plugin)
     { "label-decorations", G_TYPE_BOOLEAN },
     { "show-window-previews", G_TYPE_BOOLEAN },
     { "icon-size", G_TYPE_INT },
+    { "button-spacing", G_TYPE_INT },
     { NULL }
   };
 
