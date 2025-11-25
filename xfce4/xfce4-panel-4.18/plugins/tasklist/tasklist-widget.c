@@ -3600,8 +3600,11 @@ xfce_tasklist_button_icon_changed (WnckWindow        *window,
     return;
 
   /* use custom icon size if set, otherwise use panel default */
+  /* clamp to panel size minus padding to fit within panel */
   icon_size = tasklist->icon_size > 0 ? tasklist->icon_size
               : xfce_panel_plugin_get_icon_size (xfce_tasklist_get_panel_plugin (tasklist));
+  if (tasklist->size > 0 && icon_size > tasklist->size - 4)
+    icon_size = MAX (16, tasklist->size - 4);
   scale_factor = gtk_widget_get_scale_factor (GTK_WIDGET (child->tasklist));
   context = gtk_widget_get_style_context (GTK_WIDGET (child->icon));
 
@@ -4871,8 +4874,11 @@ xfce_tasklist_group_button_button_draw (GtkWidget         *widget,
 
       pango_layout_get_pixel_extents (n_windows_layout, &ink_extent, &log_extent);
       /* use custom icon size if set, otherwise use panel default */
+      /* clamp to panel size minus padding to fit within panel */
       icon_size = group_child->tasklist->icon_size > 0 ? group_child->tasklist->icon_size
                   : xfce_panel_plugin_get_icon_size (xfce_tasklist_get_panel_plugin (group_child->tasklist));
+      if (group_child->tasklist->size > 0 && icon_size > group_child->tasklist->size - 4)
+        icon_size = MAX (16, group_child->tasklist->size - 4);
       radius = log_extent.height / 2;
       if (group_child->tasklist->show_labels || icon_size < WNCK_DEFAULT_ICON_SIZE)
         {
@@ -5103,8 +5109,11 @@ xfce_tasklist_group_button_icon_changed (WnckClassGroup    *class_group,
     return;
 
   /* use custom icon size if set, otherwise use panel default */
+  /* clamp to panel size minus padding to fit within panel */
   icon_size = group_child->tasklist->icon_size > 0 ? group_child->tasklist->icon_size
               : xfce_panel_plugin_get_icon_size (xfce_tasklist_get_panel_plugin (group_child->tasklist));
+  if (group_child->tasklist->size > 0 && icon_size > group_child->tasklist->size - 4)
+    icon_size = MAX (16, group_child->tasklist->size - 4);
   scale_factor = gtk_widget_get_scale_factor (GTK_WIDGET (group_child->tasklist));
   context = gtk_widget_get_style_context (GTK_WIDGET (group_child->icon));
 
