@@ -2991,6 +2991,39 @@ xfce_tasklist_preview_control_minimize_clicked (GtkButton *button,
     }
 }
 
+/* Click handler for preview image - toggle minimize/unminimize */
+static gboolean
+xfce_tasklist_preview_image_clicked (GtkWidget *widget,
+                                      GdkEventButton *event,
+                                      gpointer user_data)
+{
+  WnckWindow *window;
+  XfceTasklist *tasklist;
+
+  if (event->type != GDK_BUTTON_PRESS || event->button != 1)
+    return FALSE;
+
+  window = g_object_get_data (G_OBJECT (widget), PREVIEW_CONTROL_WINDOW_KEY);
+  tasklist = g_object_get_data (G_OBJECT (widget), PREVIEW_CONTROL_TASKLIST_KEY);
+
+  if (window != NULL && WNCK_IS_WINDOW (window))
+    {
+      if (wnck_window_is_minimized (window))
+        wnck_window_unminimize (window, gtk_get_current_event_time ());
+      else
+        wnck_window_minimize (window);
+    }
+
+  if (tasklist != NULL && XFCE_IS_TASKLIST (tasklist) && tasklist->preview_window != NULL)
+    {
+      tasklist->mouse_in_preview = FALSE;
+      gtk_widget_destroy (tasklist->preview_window);
+      tasklist->preview_window = NULL;
+    }
+
+  return TRUE;
+}
+
 static void
 xfce_tasklist_preview_control_maximize_clicked (GtkButton *button,
                                                  gpointer user_data)
@@ -3202,6 +3235,7 @@ xfce_tasklist_preview_create_frame (XfceTasklist *tasklist,
                                      GdkPixbuf *pixbuf)
 {
   GtkWidget *outer_box;
+  GtkWidget *image_event_box;
   GtkWidget *image_frame;
   GtkWidget *overlay;
   GtkWidget *control_bar;
@@ -3226,10 +3260,20 @@ xfce_tasklist_preview_create_frame (XfceTasklist *tasklist,
   gtk_widget_set_margin_top (outer_box, 6);
   gtk_widget_set_margin_bottom (outer_box, 6);
 
+  /* Event box to capture clicks on the preview image */
+  image_event_box = gtk_event_box_new ();
+  gtk_event_box_set_above_child (GTK_EVENT_BOX (image_event_box), FALSE);
+  gtk_widget_add_events (image_event_box, GDK_BUTTON_PRESS_MASK);
+  g_object_set_data (G_OBJECT (image_event_box), PREVIEW_CONTROL_WINDOW_KEY, window);
+  g_object_set_data (G_OBJECT (image_event_box), PREVIEW_CONTROL_TASKLIST_KEY, tasklist);
+  g_signal_connect (image_event_box, "button-press-event",
+                    G_CALLBACK (xfce_tasklist_preview_image_clicked), NULL);
+  gtk_box_pack_start (GTK_BOX (outer_box), image_event_box, FALSE, FALSE, 0);
+
   /* Frame around the thumbnail with border */
   image_frame = gtk_frame_new (NULL);
   gtk_frame_set_shadow_type (GTK_FRAME (image_frame), GTK_SHADOW_OUT);
-  gtk_box_pack_start (GTK_BOX (outer_box), image_frame, FALSE, FALSE, 0);
+  gtk_container_add (GTK_CONTAINER (image_event_box), image_frame);
 
   overlay = gtk_overlay_new ();
   gtk_container_add (GTK_CONTAINER (image_frame), overlay);
