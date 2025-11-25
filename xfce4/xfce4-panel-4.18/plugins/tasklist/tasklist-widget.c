@@ -3081,6 +3081,38 @@ xfce_tasklist_preview_control_maximize_clicked (GtkButton *button,
     }
 }
 
+/* Click handler for always-on-top (pin) button */
+static void
+xfce_tasklist_preview_control_pin_clicked (GtkButton *button,
+                                            gpointer user_data)
+{
+  WnckWindow *window;
+  GtkWidget *image;
+  gboolean is_pinned;
+
+  window = g_object_get_data (G_OBJECT (button), PREVIEW_CONTROL_WINDOW_KEY);
+
+  if (window != NULL && WNCK_IS_WINDOW (window))
+    {
+      is_pinned = wnck_window_is_above (window);
+      if (is_pinned)
+        wnck_window_unmake_above (window);
+      else
+        wnck_window_make_above (window);
+
+      /* Update the button icon to reflect new state:
+       * After toggle: is_pinned means it WAS pinned, now unpinned -> show unpin
+       *               !is_pinned means it WAS unpinned, now pinned -> show pin */
+      image = gtk_bin_get_child (GTK_BIN (button));
+      if (GTK_IS_IMAGE (image))
+        {
+          gtk_image_set_from_icon_name (GTK_IMAGE (image),
+              is_pinned ? "xapp-unpin-symbolic" : "xapp-pin-symbolic",
+              GTK_ICON_SIZE_MENU);
+        }
+    }
+}
+
 /* Create a single control button */
 static GtkWidget *
 xfce_tasklist_preview_create_control_button (XfceTasklist *tasklist,
@@ -3138,6 +3170,30 @@ xfce_tasklist_preview_create_control_bar (XfceTasklist *tasklist,
       tasklist, window, "window-close-symbolic", "Close",
       G_CALLBACK (xfce_tasklist_preview_control_close_clicked));
   gtk_box_pack_start (GTK_BOX (hbox), close_button, FALSE, FALSE, 0);
+
+  return hbox;
+}
+
+/* Create the pin bar with always-on-top button (left side) */
+static GtkWidget *
+xfce_tasklist_preview_create_pin_bar (XfceTasklist *tasklist,
+                                       WnckWindow *window)
+{
+  GtkWidget *hbox;
+  GtkWidget *pin_button;
+  const gchar *icon_name;
+
+  hbox = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 2);
+
+  /* Check current state to show appropriate icon:
+   * xapp-pin-symbolic when pinned (always on top)
+   * xapp-unpin-symbolic when not pinned */
+  icon_name = wnck_window_is_above (window) ? "xapp-pin-symbolic" : "xapp-unpin-symbolic";
+
+  pin_button = xfce_tasklist_preview_create_control_button (
+      tasklist, window, icon_name, "Always on Top",
+      G_CALLBACK (xfce_tasklist_preview_control_pin_clicked));
+  gtk_box_pack_start (GTK_BOX (hbox), pin_button, FALSE, FALSE, 0);
 
   return hbox;
 }
@@ -3270,6 +3326,7 @@ xfce_tasklist_preview_create_frame (XfceTasklist *tasklist,
   GtkWidget *image_frame;
   GtkWidget *overlay;
   GtkWidget *control_bar;
+  GtkWidget *pin_bar;
   GtkWidget *image;
   GtkWidget *title_box;
   GtkWidget *icon_image;
@@ -3323,13 +3380,21 @@ xfce_tasklist_preview_create_frame (XfceTasklist *tasklist,
       gtk_container_add (GTK_CONTAINER (overlay), image);
     }
 
-  /* Close button in top-right corner */
+  /* Control buttons in top-right corner */
   control_bar = xfce_tasklist_preview_create_control_bar (tasklist, window);
   gtk_widget_set_halign (control_bar, GTK_ALIGN_END);
   gtk_widget_set_valign (control_bar, GTK_ALIGN_START);
   gtk_widget_set_margin_top (control_bar, 2);
   gtk_widget_set_margin_end (control_bar, 2);
   gtk_overlay_add_overlay (GTK_OVERLAY (overlay), control_bar);
+
+  /* Pin button (always on top) in top-left corner */
+  pin_bar = xfce_tasklist_preview_create_pin_bar (tasklist, window);
+  gtk_widget_set_halign (pin_bar, GTK_ALIGN_START);
+  gtk_widget_set_valign (pin_bar, GTK_ALIGN_START);
+  gtk_widget_set_margin_top (pin_bar, 2);
+  gtk_widget_set_margin_start (pin_bar, 2);
+  gtk_overlay_add_overlay (GTK_OVERLAY (overlay), pin_bar);
 
   /* Title bar with icon and window name */
   window_name = wnck_window_get_name (window);
