@@ -300,6 +300,9 @@ struct _XfceTasklist
   guint preview_timeout_id;
   struct _XfceTasklistChild *preview_group;   /* group the popup currently shows (NULL for a single window) */
   guint preview_refresh_id;           /* deferred rebuild after a control action on one thumbnail */
+  GtkWidget *preview_anchor;          /* the taskbar button the popup belongs to */
+  guint preview_watch_id;             /* pointer watchdog: closes the popup when leave events never arrive */
+  guint preview_outside_ticks;        /* consecutive watchdog ticks with the pointer outside popup+button */
   GHashTable *preview_cache; /* cached window snapshots */
 
 #ifdef ENABLE_X11
@@ -479,6 +482,9 @@ xfce_tasklist_preview_show_group (XfceTasklist *tasklist,
                                    XfceTasklistChild *group_child);
 static void
 xfce_tasklist_preview_refresh_later (XfceTasklist *tasklist);
+static void
+xfce_tasklist_preview_watch_start (XfceTasklist *tasklist,
+                                   GtkWidget *anchor);
 
 /* wireframe */
 #ifdef ENABLE_X11
@@ -3145,6 +3151,87 @@ xfce_tasklist_preview_refresh_later (XfceTasklist *tasklist)
   tasklist->preview_refresh_id = g_timeout_add (180, xfce_tasklist_preview_refresh_now, tasklist);
 }
 
+/* Pointer watchdog. Hiding is driven by leave-notify events, but over a remote desktop (Chrome Remote
+ * Desktop) the pointer can jump from the button to somewhere else without X ever seeing it cross the
+ * popup, so no leave event fires and the popup stays up forever. Poll the REAL pointer position while a
+ * popup is open: if it is outside both the popup and the button that opened it for ~600 ms, close it. */
+static gboolean
+xfce_tasklist_preview_point_in_widget (GtkWidget *widget,
+                                       gint rx,
+                                       gint ry)
+{
+  GdkWindow *win;
+  GtkAllocation alloc;
+  gint ox, oy, wx, wy;
+
+  if (widget == NULL || !gtk_widget_get_realized (widget))
+    return FALSE;
+  win = gtk_widget_get_window (widget);
+  if (win == NULL)
+    return FALSE;
+  gdk_window_get_origin (win, &ox, &oy);
+  gtk_widget_get_allocation (widget, &alloc);
+  if (gtk_widget_get_has_window (widget))
+    { wx = ox; wy = oy; }                        /* toplevel: allocation is relative to its own window */
+  else
+    { wx = ox + alloc.x; wy = oy + alloc.y; }    /* child widget inside a parent window */
+  /* a little slack: the panel button is small and CRD pointer coordinates are coarse */
+  return rx >= wx - 6 && rx < wx + alloc.width + 6 && ry >= wy - 6 && ry < wy + alloc.height + 6;
+}
+
+static gboolean
+xfce_tasklist_preview_watch_tick (gpointer user_data)
+{
+  XfceTasklist *tasklist = user_data;
+  GdkDisplay *display;
+  GdkSeat *seat;
+  GdkDevice *pointer;
+  gint rx = 0, ry = 0;
+  gboolean inside;
+
+  if (!XFCE_IS_TASKLIST (tasklist) || tasklist->preview_window == NULL)
+    {
+      if (XFCE_IS_TASKLIST (tasklist))
+        tasklist->preview_watch_id = 0;
+      return FALSE;
+    }
+
+  display = gtk_widget_get_display (GTK_WIDGET (tasklist));
+  seat = gdk_display_get_default_seat (display);
+  pointer = seat != NULL ? gdk_seat_get_pointer (seat) : NULL;
+  if (pointer == NULL)
+    return TRUE;
+  gdk_device_get_position (pointer, NULL, &rx, &ry);
+
+  inside = xfce_tasklist_preview_point_in_widget (tasklist->preview_window, rx, ry)
+           || xfce_tasklist_preview_point_in_widget (tasklist->preview_anchor, rx, ry);
+
+  if (inside)
+    {
+      tasklist->preview_outside_ticks = 0;
+      return TRUE;
+    }
+
+  if (++tasklist->preview_outside_ticks < 3)     /* 3 x 250 ms outside before acting */
+    return TRUE;
+
+  tasklist->preview_watch_id = 0;
+  tasklist->mouse_in_preview = FALSE;
+  xfce_tasklist_preview_hide (tasklist);
+  return FALSE;
+}
+
+static void
+xfce_tasklist_preview_watch_start (XfceTasklist *tasklist,
+                                   GtkWidget *anchor)
+{
+  if (tasklist->preview_watch_id != 0)
+    g_source_remove (tasklist->preview_watch_id);
+  tasklist->preview_anchor = anchor;
+  tasklist->preview_outside_ticks = 0;
+  tasklist->preview_watch_id = g_timeout_add (250, xfce_tasklist_preview_watch_tick, tasklist);
+}
+
 /* Maximize button clicked - toggle maximize/unmaximize the window */
 static void
 xfce_tasklist_preview_control_maximize_clicked (GtkButton *button,
@@ -3469,7 +3556,13 @@ xfce_tasklist_preview_hide (XfceTasklist *tasklist)
       g_source_remove (tasklist->preview_refresh_id);
       tasklist->preview_refresh_id = 0;
     }
+  if (tasklist->preview_watch_id != 0)
+    {
+      g_source_remove (tasklist->preview_watch_id);
+      tasklist->preview_watch_id = 0;
+    }
   tasklist->preview_group = NULL;
+  tasklist->preview_anchor = NULL;
 
   /* Destroy the preview window immediately (this is only called when showing a new preview) */
   if (tasklist->preview_window != NULL)
@@ -3688,6 +3781,7 @@ xfce_tasklist_preview_show (XfceTasklist *tasklist,
 
   gtk_window_move (GTK_WINDOW (tasklist->preview_window), x, y);
   gtk_widget_show_all (tasklist->preview_window);
+  xfce_tasklist_preview_watch_start (tasklist, child->button);
 }
 
 /* Show preview for grouped windows */
@@ -3846,6 +3940,7 @@ xfce_tasklist_preview_show_group (XfceTasklist *tasklist,
 
   gtk_window_move (GTK_WINDOW (tasklist->preview_window), x, y);
   gtk_widget_show_all (tasklist->preview_window);
+  xfce_tasklist_preview_watch_start (tasklist, group_child->button);
 }
 
 
