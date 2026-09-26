@@ -191,6 +191,8 @@ typedef enum _XfcePreviewSize
 
 /* Data key for storing XfwWindow pointer on control buttons */
 #define PREVIEW_CONTROL_WINDOW_KEY "xfce-preview-control-window"
+/* last live capture of a window, kept on the XfwWindow so a MINIMIZED window still previews as it looked */
+#define PREVIEW_LAST_CAPTURE_KEY "xfce-preview-last-capture"
 #define PREVIEW_CONTROL_TASKLIST_KEY "xfce-preview-control-tasklist"
 
 struct _XfceTasklist
@@ -2948,6 +2950,10 @@ xfce_tasklist_preview_capture_window (XfceTasklist *tasklist,
                                 GDK_INTERP_BILINEAR);
 
               g_object_unref (raw_pixbuf);
+
+              /* remember this capture: once the window is minimized there is nothing on screen to grab */
+              g_object_set_data_full (G_OBJECT (window), PREVIEW_LAST_CAPTURE_KEY,
+                                      g_object_ref (pixbuf), g_object_unref);
             }
           else
             {
@@ -2959,10 +2965,31 @@ xfce_tasklist_preview_capture_window (XfceTasklist *tasklist,
         }
       else
         {
-          /* Window not accessible or minimized - use fallback with icon */
+          GdkPixbuf *last;
+
           if (gdkwindow != NULL)
             g_object_unref (gdkwindow);
-          pixbuf = xfce_tasklist_preview_create_fallback (tasklist, window);
+
+          /* Minimized (or not capturable): show the last live capture, dimmed, so the user still sees
+           * WHICH window this is; the frame adds a "Minimized" caption. Icon placeholder only if the
+           * window was never captured. */
+          last = g_object_get_data (G_OBJECT (window), PREVIEW_LAST_CAPTURE_KEY);
+          if (last != NULL && is_minimized)
+            {
+              pixbuf = gdk_pixbuf_copy (last);
+              if (pixbuf != NULL)
+                {
+                  GdkPixbuf *shade = gdk_pixbuf_new (GDK_COLORSPACE_RGB, TRUE, 8,
+                                                     gdk_pixbuf_get_width (pixbuf), gdk_pixbuf_get_height (pixbuf));
+                  gdk_pixbuf_fill (shade, 0x00000080);       /* 50% black veil */
+                  gdk_pixbuf_composite (shade, pixbuf, 0, 0,
+                                        gdk_pixbuf_get_width (pixbuf), gdk_pixbuf_get_height (pixbuf),
+                                        0, 0, 1.0, 1.0, GDK_INTERP_NEAREST, 255);
+                  g_object_unref (shade);
+                }
+            }
+          if (pixbuf == NULL)
+            pixbuf = xfce_tasklist_preview_create_fallback (tasklist, window);
         }
     }
 #endif
@@ -3465,6 +3492,25 @@ xfce_tasklist_preview_create_frame (XfceTasklist *tasklist,
       gtk_widget_set_halign (image, GTK_ALIGN_CENTER);
       gtk_widget_set_valign (image, GTK_ALIGN_CENTER);
       gtk_container_add (GTK_CONTAINER (overlay), image);
+    }
+
+  /* Minimized: say so on the thumbnail (the image is the dimmed last capture) */
+  if (xfw_window_is_minimized (window))
+    {
+      GtkWidget *caption = gtk_label_new (_("Minimized"));
+      GtkStyleContext *cctx = gtk_widget_get_style_context (caption);
+      GtkCssProvider *cprov = gtk_css_provider_new ();
+      gtk_css_provider_load_from_data (cprov,
+        ".preview-minimized-caption { color: white; background-color: alpha(black, 0.55);"
+        "  padding: 2px 8px; border-radius: 4px; font-weight: bold; }", -1, NULL);
+      gtk_style_context_add_provider (cctx, GTK_STYLE_PROVIDER (cprov), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+      gtk_style_context_add_class (cctx, "preview-minimized-caption");
+      g_object_unref (cprov);
+      gtk_widget_set_halign (caption, GTK_ALIGN_CENTER);
+      gtk_widget_set_valign (caption, GTK_ALIGN_END);
+      gtk_widget_set_margin_bottom (caption, 6);
+      gtk_overlay_add_overlay (GTK_OVERLAY (overlay), caption);
+      gtk_overlay_set_overlay_pass_through (GTK_OVERLAY (overlay), caption, TRUE);
     }
 
   /* Add control bar overlaid on top-right corner */
