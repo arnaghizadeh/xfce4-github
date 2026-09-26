@@ -3074,7 +3074,7 @@ xfce_tasklist_preview_control_minimize_clicked (GtkButton *button,
     }
 }
 
-/* Preview thumbnail clicked - toggle the window: restore + raise it when minimized, minimize it when showing.
+/* Preview thumbnail clicked - bring the window to the front (restore it first if minimized).
  * Without a click handler the popup was display-only: a window minimized from its control bar could never be
  * reached again through the preview (the taskbar group button only lists the group's windows in a menu). */
 static gboolean
@@ -3093,15 +3093,11 @@ xfce_tasklist_preview_frame_button_press (GtkWidget *widget,
 
   if (window != NULL && XFW_IS_WINDOW (window))
     {
-      /* TOGGLE, like a taskbar button: a minimized window is restored and raised; a showing window is
-       * minimized. So a thumbnail is always a two-way switch and a window can never get stranded. */
+      /* Windows 7 behaviour: a click on a thumbnail ALWAYS brings that window to the front (restoring it
+       * first if minimized). Minimizing is the control bar's job, never the thumbnail's. */
       if (xfw_window_is_minimized (window))
-        {
-          xfw_window_set_minimized (window, FALSE, NULL);
-          xfw_window_activate (window, NULL, (guint64) event->time, NULL);
-        }
-      else
-        xfw_window_set_minimized (window, TRUE, NULL);
+        xfw_window_set_minimized (window, FALSE, NULL);
+      xfw_window_activate (window, NULL, (guint64) event->time, NULL);
     }
 
   if (tasklist != NULL && XFCE_IS_TASKLIST (tasklist) && tasklist->preview_window != NULL)
