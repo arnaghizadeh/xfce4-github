@@ -298,6 +298,8 @@ struct _XfceTasklist
   XfcePreviewSize preview_size;
   GtkWidget *preview_window;
   guint preview_timeout_id;
+  struct _XfceTasklistChild *preview_group;   /* group the popup currently shows (NULL for a single window) */
+  guint preview_refresh_id;           /* deferred rebuild after a control action on one thumbnail */
   GHashTable *preview_cache; /* cached window snapshots */
 
 #ifdef ENABLE_X11
@@ -475,6 +477,8 @@ xfce_tasklist_preview_show (XfceTasklist *tasklist,
 static void
 xfce_tasklist_preview_show_group (XfceTasklist *tasklist,
                                    XfceTasklistChild *group_child);
+static void
+xfce_tasklist_preview_refresh_later (XfceTasklist *tasklist);
 
 /* wireframe */
 #ifdef ENABLE_X11
@@ -3038,13 +3042,11 @@ xfce_tasklist_preview_control_close_clicked (GtkButton *button,
       xfw_window_close (window, gtk_get_current_event_time (), NULL);
     }
 
-  /* Hide the preview after action */
-  if (tasklist != NULL && XFCE_IS_TASKLIST (tasklist) && tasklist->preview_window != NULL)
-    {
-      tasklist->mouse_in_preview = FALSE;
-      gtk_widget_destroy (tasklist->preview_window);
-      tasklist->preview_window = NULL;
-    }
+  /* Keep the popup: acting on ONE thumbnail does not mean the user is done with the group. Rebuild it
+   * shortly (after the window manager has applied the action) so the closed window drops out and
+   * minimized ones show their caption; it disappears by itself only when no window is left. */
+  if (tasklist != NULL && XFCE_IS_TASKLIST (tasklist))
+    xfce_tasklist_preview_refresh_later (tasklist);
 }
 
 /* Minimize button clicked - minimize/restore the target window */
@@ -3065,13 +3067,11 @@ xfce_tasklist_preview_control_minimize_clicked (GtkButton *button,
       xfw_window_set_minimized (window, !is_minimized, NULL);
     }
 
-  /* Hide the preview after action */
-  if (tasklist != NULL && XFCE_IS_TASKLIST (tasklist) && tasklist->preview_window != NULL)
-    {
-      tasklist->mouse_in_preview = FALSE;
-      gtk_widget_destroy (tasklist->preview_window);
-      tasklist->preview_window = NULL;
-    }
+  /* Keep the popup: acting on ONE thumbnail does not mean the user is done with the group. Rebuild it
+   * shortly (after the window manager has applied the action) so the closed window drops out and
+   * minimized ones show their caption; it disappears by itself only when no window is left. */
+  if (tasklist != NULL && XFCE_IS_TASKLIST (tasklist))
+    xfce_tasklist_preview_refresh_later (tasklist);
 }
 
 /* Preview thumbnail clicked - bring the window to the front (restore it first if minimized).
@@ -3110,6 +3110,41 @@ xfce_tasklist_preview_frame_button_press (GtkWidget *widget,
   return TRUE;
 }
 
+static gboolean
+xfce_tasklist_preview_refresh_now (gpointer user_data)
+{
+  XfceTasklist *tasklist = user_data;
+  XfceTasklistChild *group;
+
+  if (!XFCE_IS_TASKLIST (tasklist))
+    return FALSE;
+  tasklist->preview_refresh_id = 0;
+  group = tasklist->preview_group;
+  if (group == NULL || tasklist->preview_window == NULL)
+    return FALSE;
+
+  /* the group child may have been freed if its last window closed; the tasklist list is the truth */
+  if (g_list_find (tasklist->windows, group) == NULL || group->type != CHILD_TYPE_GROUP)
+    {
+      xfce_tasklist_preview_hide (tasklist);
+      return FALSE;
+    }
+
+  /* rebuild in place; show_group calls hide () first, so keep the mouse state across it */
+  xfce_tasklist_preview_show_group (tasklist, group);
+  if (tasklist->preview_window != NULL)
+    tasklist->mouse_in_preview = TRUE;
+  return FALSE;
+}
+
+static void
+xfce_tasklist_preview_refresh_later (XfceTasklist *tasklist)
+{
+  if (tasklist->preview_refresh_id != 0)
+    g_source_remove (tasklist->preview_refresh_id);
+  tasklist->preview_refresh_id = g_timeout_add (180, xfce_tasklist_preview_refresh_now, tasklist);
+}
+
 /* Maximize button clicked - toggle maximize/unmaximize the window */
 static void
 xfce_tasklist_preview_control_maximize_clicked (GtkButton *button,
@@ -3129,13 +3164,11 @@ xfce_tasklist_preview_control_maximize_clicked (GtkButton *button,
       xfw_window_set_maximized (window, !is_maximized, NULL);
     }
 
-  /* Hide the preview after action */
-  if (tasklist != NULL && XFCE_IS_TASKLIST (tasklist) && tasklist->preview_window != NULL)
-    {
-      tasklist->mouse_in_preview = FALSE;
-      gtk_widget_destroy (tasklist->preview_window);
-      tasklist->preview_window = NULL;
-    }
+  /* Keep the popup: acting on ONE thumbnail does not mean the user is done with the group. Rebuild it
+   * shortly (after the window manager has applied the action) so the closed window drops out and
+   * minimized ones show their caption; it disappears by itself only when no window is left. */
+  if (tasklist != NULL && XFCE_IS_TASKLIST (tasklist))
+    xfce_tasklist_preview_refresh_later (tasklist);
 }
 
 /* Button enter event - add hover styling */
@@ -3431,6 +3464,12 @@ xfce_tasklist_preview_hide (XfceTasklist *tasklist)
       g_source_remove (tasklist->preview_timeout_id);
       tasklist->preview_timeout_id = 0;
     }
+  if (tasklist->preview_refresh_id != 0)
+    {
+      g_source_remove (tasklist->preview_refresh_id);
+      tasklist->preview_refresh_id = 0;
+    }
+  tasklist->preview_group = NULL;
 
   /* Destroy the preview window immediately (this is only called when showing a new preview) */
   if (tasklist->preview_window != NULL)
@@ -3677,6 +3716,7 @@ xfce_tasklist_preview_show_group (XfceTasklist *tasklist,
 
   /* Hide any existing preview first */
   xfce_tasklist_preview_hide (tasklist);
+  tasklist->preview_group = group_child;
 
   /* Count the group's windows that belong on the CURRENT workspace. The members of a group live in a
    * menu that is never shown, so gtk_widget_get_visible (child->button) is stale state (whatever the
