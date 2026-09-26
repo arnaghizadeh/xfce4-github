@@ -170,12 +170,12 @@ typedef enum _XfcePreviewSize
 } XfcePreviewSize;
 
 /* Preview size dimensions */
-#define PREVIEW_SIZE_SMALL_WIDTH   200
-#define PREVIEW_SIZE_SMALL_HEIGHT  150
-#define PREVIEW_SIZE_MEDIUM_WIDTH  280
-#define PREVIEW_SIZE_MEDIUM_HEIGHT 210
-#define PREVIEW_SIZE_LARGE_WIDTH   360
-#define PREVIEW_SIZE_LARGE_HEIGHT  270
+#define PREVIEW_SIZE_SMALL_WIDTH   160
+#define PREVIEW_SIZE_SMALL_HEIGHT  120
+#define PREVIEW_SIZE_MEDIUM_WIDTH  220
+#define PREVIEW_SIZE_MEDIUM_HEIGHT 165
+#define PREVIEW_SIZE_LARGE_WIDTH   280
+#define PREVIEW_SIZE_LARGE_HEIGHT  210
 
 /* Preview frame styling */
 #define PREVIEW_PADDING           8
@@ -185,9 +185,9 @@ typedef enum _XfcePreviewSize
 #define PREVIEW_GROUP_SPACING     10
 
 /* Preview control bar styling */
-#define PREVIEW_CONTROL_BAR_HEIGHT    28
-#define PREVIEW_CONTROL_BUTTON_SIZE   22
-#define PREVIEW_CONTROL_BUTTON_MARGIN 3
+#define PREVIEW_CONTROL_BAR_HEIGHT    20
+#define PREVIEW_CONTROL_BUTTON_SIZE   16
+#define PREVIEW_CONTROL_BUTTON_MARGIN 2
 
 /* Data key for storing XfwWindow pointer on control buttons */
 #define PREVIEW_CONTROL_WINDOW_KEY "xfce-preview-control-window"
@@ -1122,6 +1122,19 @@ xfce_tasklist_finalize (GObject *object)
   xfce_tasklist_wireframe_destroy (tasklist);
 #endif
 
+  /* cleanup preview resources */
+  if (tasklist->preview_timeout_id != 0)
+    {
+      g_source_remove (tasklist->preview_timeout_id);
+      tasklist->preview_timeout_id = 0;
+    }
+
+  if (tasklist->preview_window != NULL)
+    {
+      gtk_widget_destroy (tasklist->preview_window);
+      tasklist->preview_window = NULL;
+    }
+
   /* free the preview cache */
   if (tasklist->preview_cache != NULL)
     g_hash_table_destroy (tasklist->preview_cache);
@@ -1582,6 +1595,19 @@ static void
 xfce_tasklist_unrealize (GtkWidget *widget)
 {
   XfceTasklist *tasklist = XFCE_TASKLIST (widget);
+
+  /* hide preview window before unrealizing */
+  if (tasklist->preview_timeout_id != 0)
+    {
+      g_source_remove (tasklist->preview_timeout_id);
+      tasklist->preview_timeout_id = 0;
+    }
+
+  if (tasklist->preview_window != NULL)
+    {
+      gtk_widget_destroy (tasklist->preview_window);
+      tasklist->preview_window = NULL;
+    }
 
   /* we're going to loose the screen */
   xfce_tasklist_disconnect_screen (tasklist);
@@ -2986,7 +3012,7 @@ xfce_tasklist_preview_control_close_clicked (GtkButton *button,
     }
 
   /* Hide the preview after action */
-  if (tasklist != NULL && tasklist->preview_window != NULL)
+  if (tasklist != NULL && XFCE_IS_TASKLIST (tasklist) && tasklist->preview_window != NULL)
     {
       tasklist->mouse_in_preview = FALSE;
       gtk_widget_destroy (tasklist->preview_window);
@@ -3013,7 +3039,7 @@ xfce_tasklist_preview_control_minimize_clicked (GtkButton *button,
     }
 
   /* Hide the preview after action */
-  if (tasklist != NULL && tasklist->preview_window != NULL)
+  if (tasklist != NULL && XFCE_IS_TASKLIST (tasklist) && tasklist->preview_window != NULL)
     {
       tasklist->mouse_in_preview = FALSE;
       gtk_widget_destroy (tasklist->preview_window);
@@ -3021,25 +3047,67 @@ xfce_tasklist_preview_control_minimize_clicked (GtkButton *button,
     }
 }
 
-/* Maximize button clicked - maximize the window */
+/* Preview thumbnail clicked - toggle the window: restore + raise it when minimized, minimize it when showing.
+ * Without a click handler the popup was display-only: a window minimized from its control bar could never be
+ * reached again through the preview (the taskbar group button only lists the group's windows in a menu). */
+static gboolean
+xfce_tasklist_preview_frame_button_press (GtkWidget *widget,
+                                          GdkEventButton *event,
+                                          gpointer user_data)
+{
+  XfwWindow *window;
+  XfceTasklist *tasklist;
+
+  if (event->button != 1)
+    return FALSE;
+
+  window = g_object_get_data (G_OBJECT (widget), PREVIEW_CONTROL_WINDOW_KEY);
+  tasklist = g_object_get_data (G_OBJECT (widget), PREVIEW_CONTROL_TASKLIST_KEY);
+
+  if (window != NULL && XFW_IS_WINDOW (window))
+    {
+      /* TOGGLE, like a taskbar button: a minimized window is restored and raised; a showing window is
+       * minimized. So a thumbnail is always a two-way switch and a window can never get stranded. */
+      if (xfw_window_is_minimized (window))
+        {
+          xfw_window_set_minimized (window, FALSE, NULL);
+          xfw_window_activate (window, NULL, (guint64) event->time, NULL);
+        }
+      else
+        xfw_window_set_minimized (window, TRUE, NULL);
+    }
+
+  if (tasklist != NULL && XFCE_IS_TASKLIST (tasklist) && tasklist->preview_window != NULL)
+    {
+      tasklist->mouse_in_preview = FALSE;
+      gtk_widget_destroy (tasklist->preview_window);
+      tasklist->preview_window = NULL;
+    }
+
+  return TRUE;
+}
+
+/* Maximize button clicked - toggle maximize/unmaximize the window */
 static void
 xfce_tasklist_preview_control_maximize_clicked (GtkButton *button,
                                                  gpointer user_data)
 {
   XfwWindow *window;
   XfceTasklist *tasklist;
+  gboolean is_maximized;
 
   window = g_object_get_data (G_OBJECT (button), PREVIEW_CONTROL_WINDOW_KEY);
   tasklist = g_object_get_data (G_OBJECT (button), PREVIEW_CONTROL_TASKLIST_KEY);
 
   if (window != NULL && XFW_IS_WINDOW (window))
     {
-      /* Maximize the window */
-      xfw_window_set_maximized (window, TRUE, NULL);
+      /* Toggle maximize state */
+      is_maximized = xfw_window_is_maximized (window);
+      xfw_window_set_maximized (window, !is_maximized, NULL);
     }
 
   /* Hide the preview after action */
-  if (tasklist != NULL && tasklist->preview_window != NULL)
+  if (tasklist != NULL && XFCE_IS_TASKLIST (tasklist) && tasklist->preview_window != NULL)
     {
       tasklist->mouse_in_preview = FALSE;
       gtk_widget_destroy (tasklist->preview_window);
@@ -3088,12 +3156,14 @@ xfce_tasklist_preview_create_control_button (XfceTasklist *tasklist,
   gtk_widget_set_size_request (button, PREVIEW_CONTROL_BUTTON_SIZE, PREVIEW_CONTROL_BUTTON_SIZE);
   gtk_widget_set_tooltip_text (button, tooltip);
 
-  /* Store the window and tasklist references on the button */
-  g_object_set_data (G_OBJECT (button), PREVIEW_CONTROL_WINDOW_KEY, window);
+  /* Store the window and tasklist references on the button with proper ref counting */
+  g_object_set_data_full (G_OBJECT (button), PREVIEW_CONTROL_WINDOW_KEY,
+                          g_object_ref (window), g_object_unref);
   g_object_set_data (G_OBJECT (button), PREVIEW_CONTROL_TASKLIST_KEY, tasklist);
 
-  /* Add icon */
-  image = gtk_image_new_from_icon_name (icon_name, GTK_ICON_SIZE_MENU);
+  /* Add icon - use smaller icon size */
+  image = gtk_image_new_from_icon_name (icon_name, GTK_ICON_SIZE_SMALL_TOOLBAR);
+  gtk_image_set_pixel_size (GTK_IMAGE (image), 12);
   gtk_container_add (GTK_CONTAINER (button), image);
 
   /* Apply CSS styling */
@@ -3251,6 +3321,35 @@ xfce_tasklist_preview_draw (GtkWidget *widget,
   return FALSE;
 }
 
+/* Timeout callback to actually hide the preview */
+static gboolean
+xfce_tasklist_preview_hide_timeout (gpointer user_data)
+{
+  XfceTasklist *tasklist;
+
+  /* Validate tasklist before proceeding */
+  if (!XFCE_IS_TASKLIST (user_data))
+    return FALSE;
+
+  tasklist = XFCE_TASKLIST (user_data);
+
+  /* Clear the timeout ID */
+  tasklist->preview_timeout_id = 0;
+
+  /* Don't hide if mouse is currently in the preview popup */
+  if (tasklist->mouse_in_preview)
+    return FALSE;
+
+  /* Destroy the preview window */
+  if (tasklist->preview_window != NULL)
+    {
+      gtk_widget_destroy (tasklist->preview_window);
+      tasklist->preview_window = NULL;
+    }
+
+  return FALSE;
+}
+
 /* Preview popup mouse enter event - mouse moved from button to preview */
 static gboolean
 xfce_tasklist_preview_enter_notify (GtkWidget *widget,
@@ -3258,6 +3357,13 @@ xfce_tasklist_preview_enter_notify (GtkWidget *widget,
                                     XfceTasklist *tasklist)
 {
   panel_return_val_if_fail (XFCE_IS_TASKLIST (tasklist), FALSE);
+
+  /* Cancel any pending hide timeout */
+  if (tasklist->preview_timeout_id != 0)
+    {
+      g_source_remove (tasklist->preview_timeout_id);
+      tasklist->preview_timeout_id = 0;
+    }
 
   /* Mark that mouse is in the preview popup */
   tasklist->mouse_in_preview = TRUE;
@@ -3273,14 +3379,20 @@ xfce_tasklist_preview_leave_notify (GtkWidget *widget,
 {
   panel_return_val_if_fail (XFCE_IS_TASKLIST (tasklist), FALSE);
 
-  /* Mouse left the preview popup - hide it */
+  /* Mouse left the preview popup - mark it and schedule hide with delay */
   tasklist->mouse_in_preview = FALSE;
 
-  if (tasklist->preview_window != NULL)
+  /* Cancel any existing timeout */
+  if (tasklist->preview_timeout_id != 0)
     {
-      gtk_widget_destroy (tasklist->preview_window);
-      tasklist->preview_window = NULL;
+      g_source_remove (tasklist->preview_timeout_id);
+      tasklist->preview_timeout_id = 0;
     }
+
+  /* Schedule hiding after a short delay (300ms) in case user moves mouse back */
+  tasklist->preview_timeout_id = g_timeout_add (300,
+                                                 xfce_tasklist_preview_hide_timeout,
+                                                 tasklist);
 
   return FALSE;
 }
@@ -3290,21 +3402,22 @@ xfce_tasklist_preview_hide (XfceTasklist *tasklist)
 {
   panel_return_if_fail (XFCE_IS_TASKLIST (tasklist));
 
+  /* Cancel any pending timeout */
   if (tasklist->preview_timeout_id != 0)
     {
       g_source_remove (tasklist->preview_timeout_id);
       tasklist->preview_timeout_id = 0;
     }
 
-  /* Don't hide if mouse is currently in the preview popup */
-  if (tasklist->mouse_in_preview)
-    return;
-
+  /* Destroy the preview window immediately (this is only called when showing a new preview) */
   if (tasklist->preview_window != NULL)
     {
       gtk_widget_destroy (tasklist->preview_window);
       tasklist->preview_window = NULL;
     }
+
+  /* Reset the flag */
+  tasklist->mouse_in_preview = FALSE;
 }
 
 /* Create a single preview frame widget for a window */
@@ -3313,78 +3426,56 @@ xfce_tasklist_preview_create_frame (XfceTasklist *tasklist,
                                      XfwWindow *window,
                                      GdkPixbuf *pixbuf)
 {
-  GtkWidget *vbox;
-  GtkWidget *header_box;
-  GtkWidget *title_label;
+  GtkWidget *overlay;
+  GtkWidget *frame;
   GtkWidget *control_bar;
   GtkWidget *image;
-  const gchar *title;
   gint target_width, target_height;
-  gint header_title_width;
 
   panel_return_val_if_fail (XFCE_IS_TASKLIST (tasklist), NULL);
   panel_return_val_if_fail (XFW_IS_WINDOW (window), NULL);
 
   xfce_tasklist_preview_get_size (tasklist, &target_width, &target_height);
 
-  vbox = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
-  gtk_widget_set_margin_start (vbox, PREVIEW_PADDING);
-  gtk_widget_set_margin_end (vbox, PREVIEW_PADDING);
-  gtk_widget_set_margin_top (vbox, PREVIEW_PADDING);
-  gtk_widget_set_margin_bottom (vbox, PREVIEW_PADDING);
+  /* Create main frame container with padding */
+  frame = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+  gtk_widget_set_margin_start (frame, PREVIEW_PADDING);
+  gtk_widget_set_margin_end (frame, PREVIEW_PADDING);
+  gtk_widget_set_margin_top (frame, PREVIEW_PADDING);
+  gtk_widget_set_margin_bottom (frame, PREVIEW_PADDING);
 
-  /* Create header box containing title and control bar */
-  header_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
-  gtk_widget_set_size_request (header_box, target_width, PREVIEW_CONTROL_BAR_HEIGHT);
-  gtk_box_pack_start (GTK_BOX (vbox), header_box, FALSE, FALSE, 0);
-
-  /* Add title label on the left side of header */
-  title = xfw_window_get_name (window);
-  if (title == NULL || *title == '\0')
-    title = _("Unknown Window");
-
-  /* Calculate title width: leave room for 3 control buttons */
-  header_title_width = target_width - (PREVIEW_CONTROL_BUTTON_SIZE * 3) - 16;
-  if (header_title_width < 50)
-    header_title_width = 50;
-
-  title_label = gtk_label_new (title);
-  gtk_label_set_ellipsize (GTK_LABEL (title_label), PANGO_ELLIPSIZE_END);
-  gtk_label_set_max_width_chars (GTK_LABEL (title_label), 20);
-  gtk_widget_set_halign (title_label, GTK_ALIGN_START);
-  gtk_widget_set_valign (title_label, GTK_ALIGN_CENTER);
-  gtk_widget_set_size_request (title_label, header_title_width, -1);
-  gtk_widget_set_hexpand (title_label, TRUE);
-
-  /* Style the title */
+  /* Create overlay to place controls on top of preview image, inside an event box so a click on the
+   * thumbnail activates the window (see xfce_tasklist_preview_frame_button_press) */
+  overlay = gtk_overlay_new ();
   {
-    GtkStyleContext *context = gtk_widget_get_style_context (title_label);
-    gtk_style_context_add_class (context, "preview-title");
-
-    PangoAttrList *attrs = pango_attr_list_new ();
-    pango_attr_list_insert (attrs, pango_attr_weight_new (PANGO_WEIGHT_MEDIUM));
-    gtk_label_set_attributes (GTK_LABEL (title_label), attrs);
-    pango_attr_list_unref (attrs);
+    GtkWidget *click_box = gtk_event_box_new ();
+    gtk_event_box_set_visible_window (GTK_EVENT_BOX (click_box), FALSE);
+    g_object_set_data (G_OBJECT (click_box), PREVIEW_CONTROL_WINDOW_KEY, window);
+    g_object_set_data (G_OBJECT (click_box), PREVIEW_CONTROL_TASKLIST_KEY, tasklist);
+    g_signal_connect (G_OBJECT (click_box), "button-press-event",
+                      G_CALLBACK (xfce_tasklist_preview_frame_button_press), NULL);
+    gtk_container_add (GTK_CONTAINER (click_box), overlay);
+    gtk_box_pack_start (GTK_BOX (frame), click_box, TRUE, TRUE, 0);
   }
 
-  gtk_box_pack_start (GTK_BOX (header_box), title_label, TRUE, TRUE, 0);
-
-  /* Add control bar on the right side of header */
-  control_bar = xfce_tasklist_preview_create_control_bar (tasklist, window);
-  gtk_widget_set_halign (control_bar, GTK_ALIGN_END);
-  gtk_widget_set_valign (control_bar, GTK_ALIGN_CENTER);
-  gtk_box_pack_end (GTK_BOX (header_box), control_bar, FALSE, FALSE, 0);
-
-  /* Add the preview image */
+  /* Add the preview image as the base layer */
   if (pixbuf != NULL)
     {
       image = gtk_image_new_from_pixbuf (pixbuf);
       gtk_widget_set_halign (image, GTK_ALIGN_CENTER);
       gtk_widget_set_valign (image, GTK_ALIGN_CENTER);
-      gtk_box_pack_start (GTK_BOX (vbox), image, TRUE, TRUE, 0);
+      gtk_container_add (GTK_CONTAINER (overlay), image);
     }
 
-  return vbox;
+  /* Add control bar overlaid on top-right corner */
+  control_bar = xfce_tasklist_preview_create_control_bar (tasklist, window);
+  gtk_widget_set_halign (control_bar, GTK_ALIGN_END);
+  gtk_widget_set_valign (control_bar, GTK_ALIGN_START);
+  gtk_widget_set_margin_top (control_bar, 4);
+  gtk_widget_set_margin_end (control_bar, 4);
+  gtk_overlay_add_overlay (GTK_OVERLAY (overlay), control_bar);
+
+  return frame;
 }
 
 /* Show preview for a single window button */
@@ -3457,19 +3548,40 @@ xfce_tasklist_preview_show (XfceTasklist *tasklist,
 
   g_object_unref (pixbuf);
 
-  /* Calculate total size */
+  /* Calculate total size - controls are overlaid so no extra height needed */
   total_width = target_width + (PREVIEW_PADDING * 2);
   total_height = target_height + (PREVIEW_PADDING * 2);
-  /* Always include header height (control bar + title) */
-  total_height += PREVIEW_CONTROL_BAR_HEIGHT + 4;
 
   /* Get button position */
   gtk_widget_get_allocation (child->button, &btn_alloc);
-  gdk_window_get_origin (gtk_widget_get_window (child->button), &btn_x, &btn_y);
+
+  /* Get the toplevel window for coordinate translation */
+  GtkWidget *toplevel = gtk_widget_get_toplevel (child->button);
+  if (toplevel && gtk_widget_is_toplevel (toplevel) && gtk_widget_get_realized (toplevel))
+    {
+      gdk_window_get_origin (gtk_widget_get_window (toplevel), &btn_x, &btn_y);
+
+      /* Translate button coordinates to root window coordinates */
+      gint widget_x, widget_y;
+      gtk_widget_translate_coordinates (child->button, toplevel, 0, 0, &widget_x, &widget_y);
+      btn_x += widget_x;
+      btn_y += widget_y;
+    }
+  else
+    {
+      /* Fallback to direct window origin */
+      if (gtk_widget_get_realized (child->button) && gtk_widget_get_window (child->button))
+        gdk_window_get_origin (gtk_widget_get_window (child->button), &btn_x, &btn_y);
+      else
+        {
+          btn_x = 0;
+          btn_y = 0;
+        }
+    }
 
   /* Get monitor geometry */
   monitor = gdk_display_get_monitor_at_window (gtk_widget_get_display (GTK_WIDGET (tasklist)),
-                                                gtk_widget_get_window (child->button));
+                                                gtk_widget_get_window (GTK_WIDGET (tasklist)));
   gdk_monitor_get_geometry (monitor, &monitor_geom);
 
   /* Position the preview centered above/below the button */
@@ -3512,6 +3624,7 @@ xfce_tasklist_preview_show_group (XfceTasklist *tasklist,
   GdkMonitor *monitor;
   GdkRectangle monitor_geom;
   GtkAllocation btn_alloc;
+  XfwWorkspace *active_ws;
 
   panel_return_if_fail (XFCE_IS_TASKLIST (tasklist));
   panel_return_if_fail (group_child != NULL);
@@ -3523,11 +3636,15 @@ xfce_tasklist_preview_show_group (XfceTasklist *tasklist,
   /* Hide any existing preview first */
   xfce_tasklist_preview_hide (tasklist);
 
-  /* Count visible windows */
+  /* Count the group's windows that belong on the CURRENT workspace. The members of a group live in a
+   * menu that is never shown, so gtk_widget_get_visible (child->button) is stale state (whatever the
+   * workspace-change handler last set it to); asking xfce_tasklist_button_visible () is what the stock
+   * button logic does, and it keeps a terminal on workspace 4 out of the preview on workspace 1. */
+  active_ws = xfw_workspace_group_get_active_workspace (tasklist->workspace_group);
   for (li = group_child->windows; li != NULL; li = li->next)
     {
       XfceTasklistChild *child = li->data;
-      if (gtk_widget_get_visible (child->button) && child->type == CHILD_TYPE_GROUP_MENU)
+      if (child->type == CHILD_TYPE_GROUP_MENU && xfce_tasklist_button_visible (child, active_ws))
         n_windows++;
     }
 
@@ -3573,11 +3690,11 @@ xfce_tasklist_preview_show_group (XfceTasklist *tasklist,
   gtk_widget_set_margin_bottom (hbox, PREVIEW_PADDING);
   gtk_container_add (GTK_CONTAINER (event_box), hbox);
 
-  /* Add preview for each window in the group */
+  /* Add preview for each window in the group that is on the current workspace */
   for (li = group_child->windows; li != NULL; li = li->next)
     {
       XfceTasklistChild *child = li->data;
-      if (gtk_widget_get_visible (child->button) && child->type == CHILD_TYPE_GROUP_MENU)
+      if (child->type == CHILD_TYPE_GROUP_MENU && xfce_tasklist_button_visible (child, active_ws))
         {
           GdkPixbuf *pixbuf = xfce_tasklist_preview_capture_window (tasklist, child->window);
           if (pixbuf != NULL)
@@ -3592,8 +3709,6 @@ xfce_tasklist_preview_show_group (XfceTasklist *tasklist,
   /* Calculate total size */
   gint single_width = target_width + (PREVIEW_PADDING * 2);
   gint single_height = target_height + (PREVIEW_PADDING * 2);
-  /* Always include header height (control bar + title) */
-  single_height += PREVIEW_CONTROL_BAR_HEIGHT + 4;
 
   /* Limit to max 4 previews in a row to prevent overflow */
   gint max_previews = MIN (n_windows, 4);
@@ -3602,11 +3717,34 @@ xfce_tasklist_preview_show_group (XfceTasklist *tasklist,
 
   /* Get button position */
   gtk_widget_get_allocation (group_child->button, &btn_alloc);
-  gdk_window_get_origin (gtk_widget_get_window (group_child->button), &btn_x, &btn_y);
+
+  /* Get the toplevel window for coordinate translation */
+  GtkWidget *toplevel = gtk_widget_get_toplevel (group_child->button);
+  if (toplevel && gtk_widget_is_toplevel (toplevel) && gtk_widget_get_realized (toplevel))
+    {
+      gdk_window_get_origin (gtk_widget_get_window (toplevel), &btn_x, &btn_y);
+
+      /* Translate button coordinates to root window coordinates */
+      gint widget_x, widget_y;
+      gtk_widget_translate_coordinates (group_child->button, toplevel, 0, 0, &widget_x, &widget_y);
+      btn_x += widget_x;
+      btn_y += widget_y;
+    }
+  else
+    {
+      /* Fallback to direct window origin */
+      if (gtk_widget_get_realized (group_child->button) && gtk_widget_get_window (group_child->button))
+        gdk_window_get_origin (gtk_widget_get_window (group_child->button), &btn_x, &btn_y);
+      else
+        {
+          btn_x = 0;
+          btn_y = 0;
+        }
+    }
 
   /* Get monitor geometry */
   monitor = gdk_display_get_monitor_at_window (gtk_widget_get_display (GTK_WIDGET (tasklist)),
-                                                gtk_widget_get_window (group_child->button));
+                                                gtk_widget_get_window (GTK_WIDGET (tasklist)));
   gdk_monitor_get_geometry (monitor, &monitor_geom);
 
   /* Position centered on button */
@@ -4173,8 +4311,8 @@ xfce_tasklist_button_leave_notify_event (GtkWidget *button,
   panel_return_val_if_fail (XFCE_IS_TASKLIST (child->tasklist), FALSE);
   panel_return_val_if_fail (child->type != CHILD_TYPE_GROUP, FALSE);
 
-  /* Hide window preview */
-  xfce_tasklist_preview_hide (child->tasklist);
+  /* Don't hide window preview here - let it stay visible so user can hover over it */
+  /* The preview will hide itself when mouse leaves it (see xfce_tasklist_preview_leave_notify) */
 
   /* disconnect signals */
   g_signal_handlers_disconnect_by_func (button, xfce_tasklist_button_leave_notify_event, child);
@@ -4200,10 +4338,8 @@ xfce_tasklist_button_enter_notify_event (GtkWidget *button,
   panel_return_val_if_fail (XFW_IS_WINDOW (child->window), FALSE);
 
   /* Show window preview if enabled */
-  g_message ("PREVIEW DEBUG: show_window_previews = %d", child->tasklist->show_window_previews);
   if (child->tasklist->show_window_previews)
     {
-      g_message ("PREVIEW DEBUG: Calling xfce_tasklist_preview_show");
       xfce_tasklist_preview_show (child->tasklist, child);
     }
 
@@ -5463,8 +5599,8 @@ xfce_tasklist_group_button_leave_notify_event (GtkWidget *button,
   panel_return_val_if_fail (XFCE_IS_TASKLIST (group_child->tasklist), FALSE);
   panel_return_val_if_fail (group_child->type == CHILD_TYPE_GROUP, FALSE);
 
-  /* Hide window preview */
-  xfce_tasklist_preview_hide (group_child->tasklist);
+  /* Don't hide window preview here - let it stay visible so user can hover over it */
+  /* The preview will hide itself when mouse leaves it (see xfce_tasklist_preview_leave_notify) */
 
   /* disconnect leave signal */
   g_signal_handlers_disconnect_by_func (button, xfce_tasklist_group_button_leave_notify_event, group_child);
