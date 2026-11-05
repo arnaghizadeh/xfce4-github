@@ -2154,6 +2154,34 @@ xfce_tasklist_active_workspace_changed (XfwWorkspaceGroup *group,
 
 
 
+/* TRUE for X11 toplevels that have no pixels at all (InputOnly / depth 0).
+   Some apps (xed) map one as a managed window; it shows up in the window
+   list but cannot be previewed, raised or focused, so it gets no button. */
+static gboolean
+xfce_tasklist_window_is_phantom (XfceTasklist *tasklist,
+                                 XfwWindow *window)
+{
+#ifdef ENABLE_X11
+  if (xfw_windowing_get () == XFW_WINDOWING_X11)
+    {
+      GdkDisplay *display = gtk_widget_get_display (GTK_WIDGET (tasklist));
+      XWindowAttributes xattrs;
+      gboolean ok;
+
+      gdk_x11_display_error_trap_push (display);
+      ok = XGetWindowAttributes (gdk_x11_display_get_xdisplay (display),
+                                 tasklist_window_get_wid (window), &xattrs);
+      if (gdk_x11_display_error_trap_pop (display) != 0 || !ok)
+        return FALSE;
+
+      return xattrs.class != InputOutput || xattrs.depth == 0;
+    }
+#endif
+  return FALSE;
+}
+
+
+
 static void
 xfce_tasklist_window_added (XfwScreen *screen,
                             XfwWindow *window,
@@ -2166,6 +2194,10 @@ xfce_tasklist_window_added (XfwScreen *screen,
   panel_return_if_fail (XFCE_IS_TASKLIST (tasklist));
   panel_return_if_fail (tasklist->screen == screen);
   panel_return_if_fail (xfw_window_get_screen (window) == screen);
+
+  /* phantom windows (InputOnly) never get a button */
+  if (xfce_tasklist_window_is_phantom (tasklist, window))
+    return;
 
   /* ignore this window, but watch it for state changes */
   if (xfw_window_is_skip_tasklist (window))
@@ -2910,8 +2942,22 @@ xfce_tasklist_preview_capture_window (XfceTasklist *tasklist,
       gint scaled_width, scaled_height;
 
       /* Get the GdkWindow for the XfwWindow */
-      gdkwindow = gdk_x11_window_foreign_new_for_display (display,
-                                                           tasklist_window_get_wid (window));
+      Display *xdisplay = gdk_x11_display_get_xdisplay (display);
+      Window xwindow = tasklist_window_get_wid (window);
+      XWindowAttributes xattrs;
+
+      /* Only InputOutput, viewable windows have pixels to grab. Capturing an
+         InputOnly window (depth 0; some apps map one as a toplevel) makes cairo
+         issue CreateGC on it, X answers BadMatch and GDK aborts the panel. */
+      gdk_x11_display_error_trap_push (display);
+      if (!XGetWindowAttributes (xdisplay, xwindow, &xattrs)
+          || gdk_x11_display_error_trap_pop (display) != 0
+          || xattrs.class != InputOutput
+          || xattrs.depth == 0
+          || xattrs.map_state != IsViewable)
+        return xfce_tasklist_preview_create_fallback (tasklist, window);
+
+      gdkwindow = gdk_x11_window_foreign_new_for_display (display, xwindow);
 
       if (gdkwindow != NULL && !is_minimized)
         {
@@ -2919,7 +2965,7 @@ xfce_tasklist_preview_capture_window (XfceTasklist *tasklist,
           src_height = gdk_window_get_height (gdkwindow);
 
           /* Handle edge case: very small windows (scale up) */
-          if (src_width < 10 || src_height < 10)
+          if (src_width <= 10 || src_height <= 10)
             {
               g_object_unref (gdkwindow);
               return xfce_tasklist_preview_create_fallback (tasklist, window);
@@ -2938,7 +2984,11 @@ xfce_tasklist_preview_capture_window (XfceTasklist *tasklist,
 
           /* Capture window contents - this is a static snapshot
              This handles fullscreen windows by scaling them down to fit */
+          /* Any X error raised while grabbing must not be fatal for the panel */
+          gdk_x11_display_error_trap_push (display);
           GdkPixbuf *raw_pixbuf = gdk_pixbuf_get_from_window (gdkwindow, 0, 0, src_width, src_height);
+          if (gdk_x11_display_error_trap_pop (display) != 0)
+            g_clear_object (&raw_pixbuf);
 
           if (raw_pixbuf != NULL)
             {
